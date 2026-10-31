@@ -185,6 +185,8 @@ static uint8_t fm1_led[FM1_NCOL];
 static uint8_t fm1_led_dim[FM1_NCOL];
 static uint8_t fm1_led_breath[FM1_NCOL];   /* breathing LEDs (see top): dark .. ~60 % of lit, in step */
 static uint8_t fm1_led_mid[FM1_NCOL];      /* a steady mid level (see top): lit 1 frame in FM1_LED_MID_N */
+static uint8_t fm1_led_dim_half[FM1_NCOL]; /* of fm1_led_dim: the glow's pulse on every other frame, for half its brightness */
+static uint8_t fm1_led_half[FM1_NCOL];     /* lit every other frame: fm1__mid_n must be even for an even duty */
 
 /* scan diagnostics (console `inp`, read and cleared by the main loop): the gap between ticks
  * = the on-time of the column lit in it, in TIMER4 ticks (24 MHz) */
@@ -420,7 +422,7 @@ static void fm1_led_dim_level(uint32_t lo)
 }
 /* column c's lit lines this frame: lit, a breath's lit frame (not dim), the mid level's lit frame */
 #define FM1__LIT(c) (fm1_led[c] | (fm1__br_lit ? fm1_led_breath[c] & ~fm1_led_dim[c] : 0u) | \
-                     (!fm1__mid_ph ? fm1_led_mid[c] : 0u))
+                     (!fm1__mid_ph ? fm1_led_mid[c] : 0u) | (fm1__mid_ph & 1u ? 0u : fm1_led_half[c]))
 #if FM1_LED_DIM_DIV > 1
 static uint8_t fm1__dim_ph;
 #endif
@@ -525,7 +527,7 @@ static void fm1_input_tick(void)
     if (!fm1__dim_ph)
 #endif
     {
-        dim = fm1_led_dim[p] & ~lit;
+        dim = fm1_led_dim[p] & ~(fm1__mid_ph & 1u ? fm1_led_dim_half[p] : 0u) & ~lit;
         if (fm1__br_on) {                          /* breathing: the first kb of the k bits (kb <= k) */
             kb = (k * fm1__br_lv + fm1__br_d) >> 8;
             br = kb ? fm1_led_breath[p] & ~(lit | dim) : 0u;
@@ -612,6 +614,39 @@ static uint32_t fm1_input_note_edges(void)
     fm1_in.notes_pressed = 0;
     fm1__unlock(k);
     return p;
+}
+
+enum { FM1_LV_OFF, FM1_LV_FAINT, FM1_LV_GLOW, FM1_LV_MID, FM1_LV_HALF, FM1_LV_LIT };
+
+/* one level for key id. The new level's bits are set before the old ones clear, so a change never has a dark frame */
+static void fm1_led_level(uint32_t id, uint32_t level)
+{
+    uint32_t p, r;
+    for (p = 0; p < FM1_NCOL; p++)
+        for (r = 1; r < 5u; r++)
+            if (FM1_KEYMAP[r][p] == (int8_t)id) {
+                uint8_t bit = (uint8_t)(1u << r);
+                if (level == FM1_LV_LIT)
+                    fm1_led[p] |= bit;
+                if (level == FM1_LV_HALF)
+                    fm1_led_half[p] |= bit;
+                if (level == FM1_LV_MID)
+                    fm1_led_mid[p] |= bit;
+                if (level == FM1_LV_FAINT)
+                    fm1_led_dim_half[p] |= bit;
+                if (level != FM1_LV_OFF)
+                    fm1_led_dim[p] |= bit;
+                else
+                    fm1_led_dim[p] &= (uint8_t)~bit;
+                if (level != FM1_LV_LIT)
+                    fm1_led[p] &= (uint8_t)~bit;
+                if (level != FM1_LV_HALF)
+                    fm1_led_half[p] &= (uint8_t)~bit;
+                if (level != FM1_LV_MID)
+                    fm1_led_mid[p] &= (uint8_t)~bit;
+                if (level != FM1_LV_FAINT)
+                    fm1_led_dim_half[p] &= (uint8_t)~bit;
+            }
 }
 
 /* LED of key id (button 0..13 or note key 14..40) */

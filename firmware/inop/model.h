@@ -1,0 +1,67 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* The model in docs/index.md: packets and voices. */
+#pragma once
+#include <stdint.h>
+#include "felucca_tables.h"
+
+#define HALF_FRAMES 128u         /* I2S half buffer: 2.9 ms */
+#define NTRK 6u
+#define NVOICE 8u
+#define VOICE_FS 16000           /* one carrier peaks at 4000 of 32767 before the master; carriers add */
+#define NELEM(a) (sizeof(a) / sizeof((a)[0]))
+#define RING_PUBLISH() __asm__ volatile("" ::: "memory")
+
+#define NSOUND 64u
+#define NPATTERN 27u
+#define NSTEP 64u
+#define TRACK_LOCKS 270u
+#define SOUND_NONE 0xFFu
+#define STEP_INHERIT 0xFFu       /* a step's note, velocity or length that comes from its sound */
+
+static inline int32_t clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
+static inline int32_t mulq15(int32_t a, int32_t b) { return (a * b) >> 15; }
+
+enum {
+    PV_NOTE, PV_VEL, PV_LEN, PV_PRIO,
+    PV_AMP_A, PV_AMP_D, PV_AMP_S, PV_AMP_R,
+    PV_FLT_TYPE, PV_FLT_CUT, PV_FLT_RES, PV_FLT_KEY,
+    PV_MOD_A, PV_MOD_D, PV_MOD_S, PV_MOD_R,
+    PV_SHAPER, PV_CRUSH, PV_RATE, PV_DRIVE,
+    PV_LEVEL, PV_PAN,
+    PV_SEND_DELAY, PV_SEND_REVERB, PV_SEND_DIST, PV_SEND_FOLLOW,
+    PV_LFO1_SHAPE, PV_LFO1_PHASE, PV_LFO1_RATE, PV_LFO1_START,
+    PV_LFO2_SHAPE, PV_LFO2_PHASE, PV_LFO2_RATE, PV_LFO2_START,
+    PV_SLOT_SRC0, PV_SLOT_SRC1, PV_SLOT_SRC2, PV_SLOT_SRC3,
+    PV_SLOT_DST0, PV_SLOT_DST1, PV_SLOT_DST2, PV_SLOT_DST3,
+    PV_SLOT_AMT0, PV_SLOT_AMT1, PV_SLOT_AMT2, PV_SLOT_AMT3,
+    PV_ENGINE,
+    PV_E0, PV_E1, PV_E2, PV_E3, PV_E4, PV_E5, PV_E6, PV_E7,
+    PV_COUNT
+};
+typedef struct { int8_t v[PV_COUNT]; } pkt_t;
+
+/* project values: a trigger does not carry these. A page lists them as PV_COUNT + G_ */
+enum { G_DELAY_TIME, G_DELAY_FB, G_REVERB_SIZE, G_REVERB_DAMP, G_COUNT };
+#define ID_GLOBAL(g) (PV_COUNT + (g))
+enum { ENGINE_FM, ENGINE_PHYS, ENGINE_PERC, ENGINES };
+enum { PRIO_XXLOW, PRIO_XLOW, PRIO_LOW, PRIO_NORMAL, PRIO_HIGH, PRIO_XHIGH, PRIO_XXHIGH, PRIOS };
+typedef pkt_t sound_t;           /* a pool sound is a packet with no step applied */
+
+typedef struct {
+    uint8_t on, note, vel, len;  /* STEP_INHERIT, or this step's own. len: steps a note holds */
+    uint8_t sound;               /* sound lock: a pool index, or SOUND_NONE */
+    uint8_t chance;              /* percent */
+    uint8_t cond, ratchet;
+} step_t;
+
+typedef struct { uint8_t step, id; int8_t value; } lock_t;
+
+typedef struct {
+    uint8_t length, base;        /* base: a pool index */
+    uint16_t nlock;
+    step_t steps[NSTEP];
+    lock_t locks[TRACK_LOCKS];   /* sorted by step, then id */
+} track_pat_t;
+
+typedef struct { track_pat_t track[NTRK]; } pattern_t;
+_Static_assert(sizeof(pattern_t) <= 8192u, "a pattern fits two flash sectors");
