@@ -1,0 +1,34 @@
+site_name: INOP FM-1
+site_url: https://kvmet.github.io/inop_fm1/
+repo_url: https://github.com/kvmet/inop_fm1
+edit_uri: edit/main/docs/
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.indexes
+    - navigation.sections
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  # Renders code blocks inside list items.
+  - pymdownx.superfences
+
+# Page titles come from each page's first heading. Keep this order in step with the index pages.
+nav:
+  - index.md
