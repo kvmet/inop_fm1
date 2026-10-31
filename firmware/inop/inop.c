@@ -44,10 +44,10 @@ struct { uint32_t magic, failed, pending; } bootguard __attribute__((section(".n
 #include "model.c"
 #include "seq.c"
 #include "overdub.c"
-#include "fm_engine.c"
-#include "fm_chart.c"
 #include "voice_chain.c"
+#include "fm_engine.c"
 #include "perc_engine.c"
+#include "swarm_engine.c"
 #define POOL_SECTION __attribute__((section(".pool")))
 #include "fx_sends.c"
 #include "phys_engine.c"

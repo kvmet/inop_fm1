@@ -25,9 +25,8 @@ static volatile uint32_t meter_peak[METERS];     /* the panel reads and clears t
 static void seq_emit(uint32_t track, uint32_t step, const track_pat_t *t)
 {
     pkt_t p;
-    (void)track;
     packet_resolve(&p, sounds, t, step);
-    voice_trigger(&p, KEY_NONE, (uint32_t)p.v[PV_LEN] * seq.samples_per_step / CTL);
+    voice_trigger_step(&p, track, seq.samples_per_step);
 }
 
 /* keys poll here so a press waits at most one block */
@@ -65,6 +64,7 @@ static void audio_block(int32_t *out)
         l[i] = r[i] = delay_bus[i] = reverb_bus[i] = 0;
     keys_block();
     seq_block(&seq, patterns, CTL, seq_emit);
+    voices_hold_service(&patterns[seq.playing]);
     voices_render(l, r, delay_bus, reverb_bus);
     delay_block(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);
     reverb_block(&reverb_fx, reverb_bus, l, r, globals[G_REVERB_SIZE], globals[G_REVERB_DAMP]);

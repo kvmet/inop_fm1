@@ -19,6 +19,10 @@
 - The firmware measures each engine's slowest block at start-up. The number of voices depends on what is playing, up to 8.
 - A track can limit how many voices it holds, such as 1 for a mono bass.
 
+### Note length
+
+A step or sound sets how many steps its note lasts, up to 64. One more turn of the knob is `HOLD`: the note sounds until the track's next note. The same note again keeps sounding, so a pattern can loop under it. A different note, a changed value or a new lock starts a new note. A held note also ends when its track has no steps on. Its values come from the trigger, so a knob change takes effect at the next trigger.
+
 ### Priority
 
 Priority has 7 levels: XXLO, XLO, LOW, NORM, HIGH, XHI, XXHI. The sound sets a base value, and a lock can change it on one step.
@@ -49,14 +53,14 @@ Each voice runs from its packet in this order: engine, drive, shaper, bit crush,
 - **Master:** mix compression and mastering, then a limiter and soft clip that bound the output level.
 - **Envelope follower sends:** a voice sends to a follower instead of an audio output. The follower is a modulation source for any voice.
 
-Shared effects and the master have a fixed CPU cost, which is reserved before voices get budget.
+Shared effects and the master have a fixed CPU cost, which is reserved before voices get budget. A SWARM voice costs more at higher notes and with Sync, since its work follows its waveform edges. It is charged for its note, and the Global page counts SWARM voices at middle C with Sync on.
 
 ## Modulation
 
 - Each packet has free modulation slots. A slot holds a source, a destination and an amount.
 - The sources are the mod envelope, LFO 1, LFO 2 and velocity. The envelope follower is added later.
 - The destinations are pitch, cutoff, resonance, level, pan, drive, shaper, bit crush and rate reduce. An amount of 127 and a full source move a value by 127; pitch moves 16 semitones.
-- A new sound starts with mod envelope to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to level, all at amount 0. Each slot can be changed.
+- A new sound starts with mod envelope to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to cutoff, all at amount 0. Each slot can be changed.
 
 ## Packet
 
@@ -91,6 +95,7 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 - A step can have a sound lock, which replaces the base for that trigger. Ordinary locks apply on top.
 - PRESETS selects the track's base sound, or the sound lock of a held step.
 - A sound holds a default note, velocity and length. A step uses them until it sets its own, so a drum track can be tuned in one move.
+- Velocity sets the peak of the amp envelope: 127 is full and 64 is -12 dB. Level then sets the sound's overall level.
 - Editing a sound changes it everywhere it is used.
 
 ## Patterns
@@ -107,7 +112,7 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 - **Hold:** copy. Press the source, then press each destination.
 - **Overdub:** press PLAY and REC together, in either order. The playing pattern takes what you do on the selected track, and it keeps playing. Tap PLAY to exit.
   - **Notes:** a key sounds at once and goes to the nearest step of the track. That step is turned on and takes the note and the held length. A step holds one note, so a second note on a step replaces the first.
-  - **Black keys:** tracks cannot change during overdub, so the black keys are notes too. The last black key stays shift. To change tracks, exit and enter again.
+  - **Black keys:** tracks cannot change during overdub, so the black keys are notes too. The last black key stays shift. To change tracks, exit and enter again. The key LEDs show the keyboard as in play, not the steps, and the selected track's key flashes. `DUB` in the title bar inverts in time with it.
   - **Knobs:** the knob squares show the values of the track's last trigger, so locks show as they play. A turned knob starts from the value shown and writes its value to each step the playhead reaches. It stops when the knob has been still for one step or 150 ms, whichever is longer. Hold REC to keep writing the knobs turned so far, then release REC to stop.
   - **Locks:** a lock changes only its step's trigger, so a step that is off takes no lock, and a sweep does not change a note already sounding. `LOCKS FULL` shows when the track has no lock memory left.
   - **Other controls:** the sound, global and track values change as usual and are not recorded. SEQ does nothing. There is no undo yet.
@@ -130,6 +135,7 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 - **Title bar:** mode, page, track, track sound, pattern, counter and BPM. `P3>1` means pattern 3 is shown and pattern 1 plays. The counter `48.15` means the 48th play and step 15 of the playing pattern. One play ends when the pattern's longest track completes. The play number wraps from 64 to 1 and starts at 1 when a committed pattern starts.
 - **Knob squares:** row 1 is SEL and knobs 1 to 4, as on the panel, with each name over its value. Row 2 is ALGO, under SEL.
 - **Free space:** to the right of ALGO. The page sets what it shows. A sound copy prompt replaces it while it is active.
+- **Page tabs:** when a page button has more than one page, its lower edge shows one segment per page. The shown page's segment is solid. Press the page button again for the next page.
 - **Bottom row:** the OCT hint on the left. On the right, CPU, active voices, and L, D and S: late audio buffers, dropped triggers and stolen voices. These three show 2 digits and wrap, so a change shows that it is happening. A held step's values replace them while it is held.
 - **Sequence:** below the knobs, one row of steps per track, for the pattern being composed or previewed. All tracks use one step width, so shorter tracks end early. A playhead shows only when the shown pattern is playing. Each row has a square for each step and a lane under the squares for the playhead. A step with locks, or with a changed note, velocity or length, has a dot in its square. The selected track's number is inverted. A bar under its steps marks the ones that the white keys reach.
 - **Page buttons:** the first press shows the group's last page. Each next press moves through the group.
@@ -142,7 +148,7 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 | Amp envelope, Mod envelope | The envelope's shape, with a fixed width for the sustain. The curve is the envelope code's own output. One pixel is 0.73 ms until the curve fills the width, and then the curve scales to fit. |
 | LFO 1, LFO 2 | Two cycles of the waveform at its start phase. |
 | Mod slots | All 4 routes. |
-| Engine 1, Engine 2 | FM: the patch's algorithm and name, with carriers solid and modulators outlined. Physical modeling: the model. Perc: each partial as a bar, at its frequency and starting level. |
+| Engine 1, Engine 2 | FM: the algorithm, with carriers solid and modulators outlined. Each box names the ratio knob that sets it: C, A or B. Feedback is marked on B2. Physical modeling: the model. Perc: each partial as a bar, at its frequency and starting level. |
 | Global | Voices of each engine and model that fit the budget. |
 
 | Button | Pages |
@@ -159,24 +165,76 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 
 - The first pass has an FM engine, a physical modeling engine and the Perc drum engine. More engines are added later.
 - The physical modeling models are modal, string, membrane and sympathetic strings.
-- The sound's amp envelope ends a physical modeling voice. Keep sustain high to hear the model's own decay.
+- The sound's amp envelope ends a voice on every engine. On physical modeling, keep sustain high to hear the model's own decay.
 - The engine choice is in the packet, so a trigger can choose its engine.
+- **TIMBRE:** a mod slot destination that moves each engine's main value: Index A and B on FM, FM on Perc, and Shape on SWARM. It does nothing on physical modeling.
+- **SHAPE (FX page):** a wavefolder on every engine, up to 16 folds of drive. It starts folding at low values, and the output follows the input's level, so a sound keeps its loudness and its decay. It runs before DRIVE.
 - There are no samples and no sample slots.
 
-### Perc
+### FM
 
-Six sine partials, each with its own decay, and noise are summed. The sum then passes through the onset, the fold and a gain that restores the decay that folding removes. A Perc voice ignores note length and ends when its partials end. The voice chain applies after it as usual.
+Four sine operators, C, A, B1 and B2, in one of 8 algorithms. `>` means modulates. C always sounds.
+
+| Algorithm | Routes | Sounding operators |
+| --- | --- | --- |
+| 1 | B2 > B1 > A > C | C |
+| 2 | B2 > B1 > C, A > C | C |
+| 3 | A > C, B1 > C, B2 > C | C |
+| 4 | B1 > A > C, B2 > A | C |
+| 5 | A > C, B2 > B1 | C, B1 |
+| 6 | B2 > C, B2 > A, B2 > B1 | C, A, B1 |
+| 7 | A > C | C, B1, B2 |
+| 8 | none | all |
+
+The MOD envelope scales every operator but C, so the MOD page sets how the timbre moves over a note. Index A sets A, and Index B sets B1 and B2. Each index is a modulation depth for a modulator and a level for a sounding operator, so a sounding A, B1 or B2 follows the MOD envelope too. Use MOD SUS to keep it sounding. The amp envelope shapes the whole voice.
 
 | Knob | Page | Value |
 | --- | --- | --- |
-| ALGO | Engine 1 | Mode. SKIN: the partials are independent. METAL: each partial modulates the next. |
-| 1 | Engine 1 | Decay: the time to -60 dB |
-| 2 | Engine 1 | Spread: partial spacing. 0 is unison, 64 is the harmonic series, and other values are inharmonic. |
+| ALGO | Engine 1 | Algorithm |
+| 1 | Engine 1 | Ratio C: 1/4, 1/2, or a whole number up to 16 |
+| 2 | Engine 1 | Ratio A |
+| 3 | Engine 1 | Ratio B: B1 and B2 |
+| 4 | Engine 1 | Index A |
+| 1 | Engine 2 | Index B |
+| 2 | Engine 2 | Feedback on B2 |
+| 3 | Engine 2 | Detune: A and B2 rise and B1 falls, by up to 1 semitone, so ratios stop being whole numbers |
+
+### SWARM
+
+Seven oscillators around the note, each with its own start phase, and a sine sub. The oscillators beat against each other, which suits a drone.
+
+| Knob | Page | Value |
+| --- | --- | --- |
+| ALGO | Engine 1 | Stack. `SAME`: all at the note. `OCTS`: two oscillators an octave down, three at the note, and two an octave up. |
+| 1 | Engine 1 | Detune: up to 11 % each way, with fine control at the low end |
+| 2 | Engine 1 | Shape: 0 is a saw, 64 is a square, and 127 is a narrow pulse. The loudness stays about the same. |
+| 3 | Engine 1 | Sync: 0 is off. Above that, each oscillator hard-syncs a second one, up to nearly 4 times its pitch. |
+| 4 | Engine 1 | Sides: the level of the six outer oscillators against the center one. 0 is the center alone. |
+| 1 | Engine 2 | Sub: the level of a sine an octave below the note. 0 is off. It does not depend on Sides or Shape, and it does not change them. |
+| 2 | Engine 2 | Drift: slow random movement of each oscillator's pitch, up to 1.5 %, and of its pulse width |
+
+The screen shows one cycle of the wave with its sync restarts. Under it is one tick per oscillator: across for detune, a row per octave for stack, and height for level. The bar below them widens with Sub.
+
+### Perc
+
+Six sine partials and noise are summed. The voice chain applies after that as usual, and its SHAPE folds the sum.
+
+The amp envelope means the same as on every other engine:
+
+- **ATK:** the rise of the voice.
+- **DEC:** the partials' time to -60 dB. Harm shortens the upper partials. FM depth falls in half of this time. Noise falls with the bend, in 170 ms plus a quarter of this time, and never takes longer than this time.
+- **SUS:** the level that the partials and FM depth fall to. Noise always falls to nothing. At 0, the voice ends when the partials end.
+- **REL:** the fade after the note ends. For a one-shot drum, set SUS to 0 and REL high: the voice rings for DEC whatever the note length. A short REL makes a gated sound that follows note length.
+
+| Knob | Page | Value |
+| --- | --- | --- |
+| ALGO | Engine 1 | Mode: the partial frequencies. TONE: harmonics. SKIN: membrane modes. BAR: free bar modes. METAL: TR-808 cymbal oscillators. |
+| 1 | Engine 1 | FM: how far each partial modulates the next. It does not depend on the partials' levels, so it works at Harm 0. |
+| 2 | Engine 1 | Spread: partial spacing. 0 is unison, 64 is the mode's frequencies, and 127 is about twice as wide. |
 | 3 | Engine 1 | Harm: low values make upper partials quiet and short, and high values make them loud and ringing. |
-| 4 | Engine 1 | Fold |
-| 1 | Engine 2 | Bend: how far the pitch starts above the note, up to 47 semitones |
-| 2 | Engine 2 | Noise: level, up to half of the sum |
-| 3 | Engine 2 | Attack: low values add a click, and high values make a longer onset, up to 46 ms |
+| 4 | Engine 1 | Bend: how far the pitch starts above the note, up to 47 semitones |
+| 1 | Engine 2 | Noise: level, up to half of the sum |
+| 2 | Engine 2 | Click: a noise burst at the start |
 
 ## Roadmap
 
@@ -188,10 +246,16 @@ Six sine partials, each with its own decay, and noise are summed. The sum then p
 - Chord modes.
 - Quantization: pitch to a scale, and recorded notes to steps.
 - Filter envelope, possibly as more assignable envelopes in the mod slots.
+- FM index routing: the MOD envelope is wired to the index, so it cannot shape the index and something else separately. Consider more mod slots and envelopes, with envelope to index as a removable default route. Decide with the page review.
 - Arpeggiator.
+- Microtiming: a step fires ahead of or behind the grid.
+- Swing.
+- Random chance: each step already holds a chance that the sequencer follows, at 100 % with no control yet.
+- Ratchets: a step fires several times within its length.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
 - After the engines, a page review: the page plan, easier mod slot editing, better use of the buttons, and what the screen shows in each use, with smaller meters.
+- In the page review, also look at consistent spacing, zero padding of numbers, and possibly a monospace font.
 - Master compression and mastering.
 
 ## Open
@@ -199,5 +263,6 @@ Six sine partials, each with its own decay, and noise are summed. The sum then p
 - Steps per track and locks per track. The first estimate is 8 KB a pattern: 64 steps and about 270 locks per track.
 - Whether a step holds several notes, for recording and chords. Decide this before saving to flash.
 
+- Bug to find: with a NORM snare firing on every step, a kick at HIGH did not fire every time. A trigger of higher priority should take a lower one on any track, and a test of that rule on the voice pool passes.
 - How many envelope followers there are.
 - How much lock storage a track gets. A track with every step locked must fit.

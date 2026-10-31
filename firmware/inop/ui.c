@@ -155,10 +155,10 @@ static int32_t ui_value(uint32_t id)
 static const char *const NAMES_SLOT[SLOTS] = {"1", "2", "3", "4"};
 static const char *const NAMES_FILTER[FLT_TYPES] = {"OFF", "LP", "BP", "HP"};
 static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "ENV", "LF1", "LF2", "VEL"};
-static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE"};
+static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB"};
 static const char *const NAMES_SHAPE[LFO_SHAPES] = {"SINE", "TRI", "SAW", "SQR", "S+H"};
 static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE"};
-static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PHYS", "PERC"};
+static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PHYS", "PERC", "SWARM"};
 static const char *const NAMES_PRIO[PRIOS] = {"XXLO", "XLO", "LOW", "NORM", "HIGH", "XHI", "XXHI"};
 static const char *const NAMES_MODEL[PM_COUNT] = {"MODL", "STRG", "MEMB", "SYMP"};
 static const char *const LABELS_PHYS[PM_COUNT][7] = {
@@ -168,8 +168,13 @@ static const char *const LABELS_PHYS[PM_COUNT][7] = {
     {"CHRD", "BRIT", "DAMP", "SYMP", "ACC", "BUZZ", "EXC"},
 };
 
-static const char *const NAMES_PERC[PERC_MODES] = {"SKIN", "METAL"};
-static const char *const LABELS_PERC[7] = {"DECAY", "SPREAD", "HARM", "FOLD", "BEND", "NOISE", "ATTACK"};
+static const char *const NAMES_ALG[FM_ALGS] = {"1", "2", "3", "4", "5", "6", "7", "8"};
+static const char *const NAMES_RATIO[FM_RATIOS] = {"1/4", "1/2", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14", "16"};
+static const char *const LABELS_FM[7] = {"RATIO C", "RATIO A", "RATIO B", "INDEX A", "INDEX B", "FEEDBK", "DETUNE"};
+static const char *const NAMES_SWARM[SWARM_MODES] = {"SAME", "OCTS"};
+static const char *const LABELS_SWARM[7] = {"DETUNE", "SHAPE", "SYNC", "SIDES", "SUB", "DRIFT", "--"};
+static const char *const NAMES_PERC[PERC_MODES] = {"TONE", "SKIN", "BAR", "METAL"};
+static const char *const LABELS_PERC[7] = {"FM", "SPREAD", "HARM", "BEND", "NOISE", "CLICK", "--"};
 
 static int ui_engine(void) { return clamp(ui_value(PV_ENGINE), 0, ENGINES - 1); }
 
@@ -178,9 +183,9 @@ static const char *ui_label(const page_t *pg, uint32_t k)
 {
     uint32_t id = page_id(pg, k);
     if (id == PV_E0)
-        return ui_engine() == ENGINE_PERC ? "MODE" : ui_engine() == ENGINE_PHYS ? "MODEL" : "PATCH";
+        return ui_engine() == ENGINE_SWARM ? "STACK" : ui_engine() == ENGINE_PERC ? "MODE" : ui_engine() == ENGINE_PHYS ? "MODEL" : "ALGO";
     if (id > PV_E0 && id <= PV_E7)
-        return ui_engine() == ENGINE_PERC ? LABELS_PERC[id - PV_E1] : ui_engine() == ENGINE_PHYS ? LABELS_PHYS[(uint32_t)clamp(ui_value(PV_E0), 0, 127) % PM_COUNT][id - PV_E1] : "--";
+        return ui_engine() == ENGINE_SWARM ? LABELS_SWARM[id - PV_E1] : ui_engine() == ENGINE_PERC ? LABELS_PERC[id - PV_E1] : ui_engine() == ENGINE_PHYS ? LABELS_PHYS[(uint32_t)clamp(ui_value(PV_E0), 0, 127) % PM_COUNT][id - PV_E1] : LABELS_FM[id - PV_E1];
     return pg->label[k];
 }
 
@@ -192,6 +197,9 @@ static const char *const *value_names(uint32_t id, int32_t *count)
     if (id == PV_PRIO) { *count = PRIOS; return NAMES_PRIO; }
     if (id == PV_E0 && ui_engine() == ENGINE_PHYS) { *count = PM_COUNT; return NAMES_MODEL; }
     if (id == PV_E0 && ui_engine() == ENGINE_PERC) { *count = PERC_MODES; return NAMES_PERC; }
+    if (id == PV_E0 && ui_engine() == ENGINE_SWARM) { *count = SWARM_MODES; return NAMES_SWARM; }
+    if (id == PV_E0 && ui_engine() == ENGINE_FM) { *count = FM_ALGS; return NAMES_ALG; }
+    if (id >= PV_E1 && id <= PV_E3 && ui_engine() == ENGINE_FM) { *count = FM_RATIOS; return NAMES_RATIO; }
     if (id >= PV_SLOT_SRC0 && id <= PV_SLOT_SRC3) { *count = MOD_SRCS; return NAMES_SRC; }
     if (id >= PV_SLOT_DST0 && id <= PV_SLOT_DST3) { *count = MOD_DSTS; return NAMES_DST; }
     if (id == PV_LFO1_SHAPE || id == PV_LFO2_SHAPE) { *count = LFO_SHAPES; return NAMES_SHAPE; }
@@ -214,7 +222,7 @@ static int32_t value_clamp(uint32_t id, int32_t v)
     if (id == PV_VEL)
         return clamp(v, 1, 127);
     if (id == PV_LEN)
-        return clamp(v, 1, NSTEP);
+        return clamp(v, 1, LEN_HOLD);
     if (value_names(id, &count))
         return clamp(v, 0, count - 1);
     if (id == PV_PAN)
@@ -575,16 +583,18 @@ static void ui_input(void)
         dub_service(rec);
 }
 
+static uint32_t ui_blink(void) { return (fm1_ms >> 7) & 1u; }
+
 static void ui_leds(void)
 {
-    uint32_t i, blink = (fm1_ms >> 7) & 1u, lock_blink = (fm1_ms & 1023u) < LOCK_BLINK_MS;
+    uint32_t i, blink = ui_blink(), lock_blink = (fm1_ms & 1023u) < LOCK_BLINK_MS;
     const track_pat_t *t = ui_track();
     for (i = 0; i < 16u; i++) {
         uint32_t level = FM1_LV_GLOW;
         if (ui.pattern_mode) {
             if (i == seq.playing || (i == seq.next && blink) || (i == ui.edit_pat && blink))
                 level = FM1_LV_LIT;
-        } else if (!keys_play || ui.dub) {
+        } else if (!keys_play) {
             uint32_t st = i + ui.view * 16u, in_track = st < t->length, on = in_track && t->steps[st].on;
             uint32_t bright_group = !((i >> 2) & 1u);    /* steps 1-4 and 9-12, as on the screen */
             if (seq.playing == ui.edit_pat && st == seq.pos[ui.track])
@@ -604,7 +614,7 @@ static void ui_leds(void)
             uint32_t p = 16u + i;
             on = p == seq.playing || (p == seq.next && blink) || (p == ui.edit_pat && blink);
         } else {
-            on = i == ui.track || (i == SHIFT_BLACK && ui_shift());
+            on = (i == ui.track && (!ui.dub || blink)) || (i == SHIFT_BLACK && ui_shift());
         }
         fm1_led_key(KEY_LED(black_key[i]), (int)on);
     }
@@ -639,7 +649,7 @@ static char *put_int(char *s, int32_t v)
 }
 
 /* SPI runs at 12 MHz, so a full-width text line blocks the main loop for about 6 ms. Only changed text is sent. */
-enum { LINE_HEAD, LINE_COUNTER, LINE_BPM, LINE_STATUS, LINE_HINT, LINE_LABEL, LINE_VALUE = LINE_LABEL + NKNOB, LINE_COUNT = LINE_VALUE + NKNOB };
+enum { LINE_DUB, LINE_HEAD, LINE_COUNTER, LINE_BPM, LINE_STATUS, LINE_HINT, LINE_LABEL, LINE_VALUE = LINE_LABEL + NKNOB, LINE_COUNT = LINE_VALUE + NKNOB };
 #define LINE_CHARS 48u
 static struct { char text[LINE_CHARS]; uint16_t ink; } line_drawn[LINE_COUNT];
 
@@ -662,6 +672,9 @@ static void ui_text(uint32_t slot, uint32_t x, uint32_t y, uint32_t w, const aaf
 /* The areas share 1 px borders and fill all 240 lines, so a taller area needs a shorter one */
 #define SCREEN_EDGE 239u
 #define TITLE_RULE_Y 21u
+#define TITLE_X 3u
+#define TITLE_W 158u
+#define DUB_W 27u
 #define KNOB_RULE_Y 69u
 #define GRID_RULE_Y 117u
 #define BOTTOM_RULE_Y 222u
@@ -816,6 +829,8 @@ static void value_text(char *b, uint32_t id)
     names = value_names(id, &count);
     if (names)
         put_text(b, names[clamp(ui_value(id), 0, count - 1)]);
+    else if (id == PV_LEN && ui_value(id) == (int32_t)LEN_HOLD)
+        put_text(b, "HOLD");
     else
         put_int(b, ui_value(id));
 }
@@ -886,7 +901,7 @@ static void free_routes(const pkt_t *p)
 
 static void free_voices(void)
 {
-    static const char *const VARIANTS[COST_VARIANTS] = {"FM ", "MOD ", "STR ", "MEM ", "SYM ", "PERC "};
+    static const char *const VARIANTS[COST_VARIANTS] = {"FM ", "MOD ", "STR ", "MEM ", "SYM ", "PERC ", "SWM "};
     char b[48], *s;
     uint32_t k;
     cv_text(4, 0, &AF_S, "VOICES THAT FIT", T_MID);
@@ -929,53 +944,92 @@ static void free_lfo(int32_t shape, int32_t start)
     }
 }
 
-#define CHART_X 66
-#define CHART_PITCH_X 20
-#define CHART_PITCH_Y 12
-#define CHART_BOX_W 14
-#define CHART_BOX_H 8
-#define CHART_BOTTOM 45          /* the bottom row's last line; the output line is under it */
+#define CHART_PITCH_X 30
+#define CHART_PITCH_Y 11
+#define CHART_BOX_W 22
+#define CHART_BOX_H 9
+#define CHART_BOTTOM 41          /* the bottom row's last line; the output line is under it */
 #define FM_OP_COL(c) ((c) & 15)
 #define FM_OP_ROW(c) ((c) >> 4)
-static int32_t chart_x(uint32_t cell) { return CHART_X + FM_OP_COL(cell) * CHART_PITCH_X; }
 static int32_t chart_y(uint32_t cell) { return CHART_BOTTOM + 1 - CHART_BOX_H - FM_OP_ROW(cell) * CHART_PITCH_Y; }
 
-/* a carrier is solid and a modulator is an outline: the palette's colours can all be equal */
-static void free_fm_chart(int32_t patch)
+/* a 5 by 7 letter: the boxes are too short for the UI fonts. C, A or B, as the ratio knob that sets the operator */
+static void chart_letter(int32_t x, int32_t y, uint32_t op, uint16_t ink)
 {
-    char b[48], *s;
-    uint32_t alg = fm_patch_alg(patch), i, j, fb = fm_feedback_op(alg);
-    uint32_t last_col = 0;
-    uint8_t m[6];
-    s = put_text(b, "ALG ");
-    put_int(s, (int32_t)alg + 1);
-    cv_text(4, 6, &AF_M, b, T_TEXT);
-    fm_patch_name(patch, b);
-    cv_text(4, 26, &AF_S, b, T_MID);
-    fm_routes(alg, m);
-    for (i = 0; i < 6u; i++) {
-        uint32_t c = FM_CELL[alg][i];
-        int32_t x = chart_x(c), y = chart_y(c);
-        if (FM_OP_COL(c) > last_col)
-            last_col = FM_OP_COL(c);
+    static const uint8_t LETTER[FM_OPS][7] = {
+        {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},
+        {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},
+        {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
+        {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
+    };
+    int32_t row, col;
+    for (row = 0; row < 7; row++)
+        for (col = 0; col < 5; col++)
+            if (LETTER[op][row] >> (4 - col) & 1)
+                cv_rect(x + col, y + row, 1, 1, ink);
+}
+
+/* a carrier is solid and a modulator is an outline: the palette's colours can all be equal */
+static void free_fm_chart(const pkt_t *p)
+{
+    /* operator i's place: high nibble the row above the output, low nibble the column */
+    static const uint8_t CELL[FM_ALGS][FM_OPS] = {
+        {0x00, 0x10, 0x20, 0x30}, {0x00, 0x10, 0x11, 0x21}, {0x01, 0x10, 0x11, 0x12}, {0x00, 0x10, 0x20, 0x21},
+        {0x00, 0x10, 0x01, 0x11}, {0x00, 0x01, 0x02, 0x11}, {0x00, 0x10, 0x01, 0x02}, {0x00, 0x01, 0x02, 0x03},
+    };
+    uint32_t alg = fm_alg(p->v[PV_E0]), i, j, last_col = 0;
+    int32_t left, width;
+    for (i = 0; i < FM_OPS; i++)
+        last_col = (uint32_t)FM_OP_COL(CELL[alg][i]) > last_col ? (uint32_t)FM_OP_COL(CELL[alg][i]) : last_col;
+    width = (int32_t)last_col * CHART_PITCH_X + CHART_BOX_W;
+    left = ((int32_t)FREE_W - width) / 2;
+    for (i = 0; i < FM_OPS; i++) {
+        uint32_t c = CELL[alg][i];
+        int32_t x = left + FM_OP_COL(c) * CHART_PITCH_X, y = chart_y(c), carrier = fm_is_carrier(alg, i);
         cv_rect(x, y, CHART_BOX_W, CHART_BOX_H, T_THEME);
-        if (!fm_is_carrier(alg, i))
+        if (!carrier)
             cv_rect(x + 1, y + 1, CHART_BOX_W - 2, CHART_BOX_H - 2, T_BG);
-        for (j = 0; j < 6u; j++)
-            if (m[i] >> j & 1u) {
-                int32_t tx = x + CHART_BOX_W / 2, sx = chart_x(FM_CELL[alg][j]) + CHART_BOX_W / 2, sy = chart_y(FM_CELL[alg][j]) + CHART_BOX_H;
+        chart_letter(x + (CHART_BOX_W - 5) / 2, y + 1, i, carrier ? T_BG : T_THEME);
+        for (j = 0; j < FM_OPS; j++)
+            if (FM_ROUTES[alg][i] >> j & 1u) {
+                int32_t tx = x + CHART_BOX_W / 2, sx = left + FM_OP_COL(CELL[alg][j]) * CHART_PITCH_X + CHART_BOX_W / 2, sy = chart_y(CELL[alg][j]) + CHART_BOX_H;
                 cv_line(sx, sy, sx, sy + 1, T_MID);
                 cv_line(sx, sy + 1, tx, sy + 1, T_MID);
-                cv_line(tx, sy + 1, tx, y - 1, T_MID);
             }
     }
     {
-        int32_t x = chart_x(FM_CELL[alg][fb]) + CHART_BOX_W, y = chart_y(FM_CELL[alg][fb]);
+        int32_t x = left + FM_OP_COL(CELL[alg][FM_B2]) * CHART_PITCH_X + CHART_BOX_W, y = chart_y(CELL[alg][FM_B2]);
         cv_rect(x, y + 1, 3, 1, T_MID);
         cv_rect(x + 2, y + 1, 1, CHART_BOX_H - 2, T_MID);
         cv_rect(x, y + CHART_BOX_H - 2, 3, 1, T_MID);
     }
-    cv_rect(CHART_X, CHART_BOTTOM + 1, (int32_t)last_col * CHART_PITCH_X + CHART_BOX_W, 1, T_MID);
+    cv_rect(left, CHART_BOTTOM + 1, width, 1, T_MID);
+}
+
+/* one cycle of the wave with SYNC's restarts. Below it, one tick per oscillator: across for DETUNE, a row per octave for STACK,
+ * height for SIDES. Under them, a bar that widens with SUB */
+static void free_swarm(const pkt_t *p)
+{
+    enum { WAVE_TOP = 3, WAVE_H = 18, ROW_Y = 24, ROW_H = 5, TICK_H = 4, SUB_Y = 40, SUB_H = 2 };
+    int32_t x, py = 0, morph, w = (int32_t)FREE_W - 8, spread = clamp(p->v[PV_E1], 0, 127), amount = spread * spread * 32767 / 16129;
+    int32_t mix = clamp(p->v[PV_E4], 0, 127), sub_w = clamp(p->v[PV_E5], 0, 127) * w / 127;
+    uint32_t width, cycle = 0xFFFFFFFFu / (uint32_t)w, restarts = (uint32_t)(256 + clamp(p->v[PV_E3], 0, 127) * 6), mode = swarm_mode(p->v[PV_E0]), i;
+    swarm_shape(p->v[PV_E2], &morph, &width);
+    for (x = 0; x < w; x++) {
+        uint32_t ph = (uint32_t)(((uint64_t)((uint32_t)x * cycle) * restarts) >> 8);
+        int32_t cy = WAVE_TOP + WAVE_H / 2 - clamp(swarm_wave(ph, morph, width), -65535, 65535) * (WAVE_H / 2) / 65536;
+        if (x)
+            cv_line(3 + x, py, 4 + x, cy, T_THEME);
+        py = cy;
+    }
+    for (i = 0; i < SWARM_OSCS; i++) {
+        int32_t h = (swarm_level(mix, i) * TICK_H + 32766) / 32767;
+        int32_t row = SWARM_OCTAVE_Q8[mode][i] == 512 ? 0 : SWARM_OCTAVE_Q8[mode][i] == 256 ? 1 : 2;
+        if (h)
+            cv_rect((int32_t)FREE_W / 2 + ((SWARM_DETUNE[i] * amount) >> 15) * w / 2 / 7300, ROW_Y + row * ROW_H + TICK_H - h, 2, h, T_MID);
+    }
+    if (sub_w)
+        cv_rect(((int32_t)FREE_W - sub_w) / 2, SUB_Y, sub_w, SUB_H, T_MID);
 }
 
 static void free_phys(int32_t model)
@@ -988,12 +1042,12 @@ static void free_phys(int32_t model)
 /* each partial as a bar: where it sits over the note's pitch, and how loud it starts */
 static void free_perc(const pkt_t *p)
 {
-    static const int32_t PX_PER_RATIO_Q8 = 16;
-    int32_t level[PERC_PARTIALS];
+    static const int32_t X_SPAN = 170;           /* SPREAD at 127 reaches this, in every mode */
+    int32_t level[PERC_PARTIALS], widest = (int32_t)perc_ratio_q8(p->v[PV_E0], 127, PERC_PARTIALS - 1u) - 256;
     uint32_t i;
     perc_levels(p->v[PV_E3], 32767, level);
     for (i = 0; i < PERC_PARTIALS; i++) {
-        int32_t h = level[i] * CURVE_H / level[0], x = 6 + (int32_t)(perc_ratio_q8(p->v[PV_E2], i) - 256u) / PX_PER_RATIO_Q8;
+        int32_t h = level[i] * CURVE_H / level[0], x = 6 + ((int32_t)perc_ratio_q8(p->v[PV_E0], p->v[PV_E2], i) - 256) * X_SPAN / widest;
         h = h < 1 ? 1 : h;
         cv_rect(x, CURVE_TOP + CURVE_H - h, 3, h, T_THEME);
     }
@@ -1037,6 +1091,25 @@ static void draw_meters(void)
 static uint32_t hash_mix(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 
 /* the pages whose drawing reads the packet redraw when it changes */
+/* one segment per page of the group, along the free space's lower edge. The shown page's is solid and the others are a line */
+static void free_page_tabs(const page_t *pg)
+{
+    enum { TAB_Y = 44, TAB_H = 3, TAB_GAP = 4 };
+    const page_group_t *g = &GROUPS[ui.group];
+    uint32_t shown = ui.group_page[ui.group], i;
+    int32_t w;
+    if (g->n < 2u || pg != &PAGES[g->page[shown]])
+        return;
+    w = ((int32_t)FREE_W - 8 - TAB_GAP * ((int32_t)g->n - 1)) / (int32_t)g->n;
+    for (i = 0; i < g->n; i++) {
+        int32_t x = 4 + (int32_t)i * (w + TAB_GAP);
+        if (i == shown)
+            cv_rect(x, TAB_Y, w, TAB_H, T_THEME);
+        else
+            cv_rect(x, TAB_Y + TAB_H - 1, w, 1, T_MID);
+    }
+}
+
 static int free_reads_packet(const page_t *pg)
 {
     return pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
@@ -1074,14 +1147,18 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             free_lfo(p.v[PV_LFO2_SHAPE], p.v[PV_LFO2_START]);
         else if (pg == &PAGES[PG_SLOTS])
             free_routes(&p);
+        else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_SWARM)
+            free_swarm(&p);
         else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_PERC)
             free_perc(&p);
         else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_PHYS)
             free_phys(p.v[PV_E0]);
         else if (pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2])
-            free_fm_chart(p.v[PV_E0]);
+            free_fm_chart(&p);
         else if (pg == &PAGES[PG_GLOBAL])
             free_voices();
+        if (ui.sound_copy == SOUND_COPY_NONE)
+            free_page_tabs(pg);
         cv_blit(FREE_X, FREE_Y);
         lcd_sync();
         drawn_key = key;
@@ -1091,10 +1168,26 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
         draw_meters();
 }
 
+/* inverts in time with the flashing track key */
+static void draw_dub_word(void)
+{
+    uint16_t ink = ui_blink() ? T_BG : T_TEXT;
+    if (line_drawn[LINE_DUB].text[0] && line_drawn[LINE_DUB].ink == ink)
+        return;
+    line_drawn[LINE_DUB].text[0] = 'D';
+    line_drawn[LINE_DUB].ink = ink;
+    draw_text_line(TITLE_X, 1, DUB_W, &AF_M, "DUB", ink, ink == T_BG ? T_TEXT : T_BG, ALIGN_CENTER);
+}
+
 static void draw_title(const page_t *pg, const track_pat_t *t)
 {
     char b[48], *s;
-    s = put_text(b, ui.dub ? "DUB " : ui.pattern_mode ? "PATT " : keys_play ? "PLAY " : "COMP ");
+    uint32_t head_x = ui.dub ? TITLE_X + DUB_W + 2u : TITLE_X;
+    if (ui.dub)
+        draw_dub_word();
+    else
+        line_drawn[LINE_DUB].text[0] = 0;
+    s = put_text(b, ui.dub ? "" : ui.pattern_mode ? "PATT " : keys_play ? "PLAY " : "COMP ");
     s = put_text(s, pg->name);
     s = put_text(s, " T");
     s = put_int(s, ui.track + 1);
@@ -1106,7 +1199,7 @@ static void draw_title(const page_t *pg, const track_pat_t *t)
         s = put_text(s, ">");
         put_int(s, seq.playing + 1);
     }
-    ui_text(LINE_HEAD, 3, 1, 158, &AF_M, b, T_TEXT, ALIGN_LEFT);
+    ui_text(LINE_HEAD, head_x, 1, TITLE_X + TITLE_W - head_x, &AF_M, b, T_TEXT, ALIGN_LEFT);
     draw_counter();
     put_int(b, (int32_t)ui.bpm);
     ui_text(LINE_BPM, 199, 1, 38, &AF_M, b, T_TEXT, ALIGN_RIGHT);
@@ -1195,22 +1288,61 @@ static void sound_phys(sound_t *s, int32_t model, int32_t e1, int32_t e2, int32_
     s->v[PV_E5] = (int8_t)e5;
     s->v[PV_E6] = (int8_t)e6;
     s->v[PV_E7] = (int8_t)e7;
-    s->v[PV_AMP_R] = 90;
+    s->v[PV_AMP_R] = 116;
     s->v[PV_NOTE] = 48;
 }
 
-static void sound_perc(sound_t *s, int32_t mode, int32_t note, int32_t decay, int32_t spread, int32_t harm, int32_t fold, int32_t bend, int32_t noise, int32_t attack)
+/* ratios: knob values. mod_d, mod_s: the MOD envelope, which sets how the index moves */
+static void sound_fm(sound_t *s, int32_t alg, int32_t note, int32_t ratio_c, int32_t ratio_a, int32_t ratio_b, int32_t index_a, int32_t index_b, int32_t feedback, int32_t detune, int32_t mod_d, int32_t mod_s)
+{
+    s->v[PV_ENGINE] = ENGINE_FM;
+    s->v[PV_E0] = (int8_t)alg;
+    s->v[PV_NOTE] = (int8_t)note;
+    s->v[PV_E1] = (int8_t)ratio_c;
+    s->v[PV_E2] = (int8_t)ratio_a;
+    s->v[PV_E3] = (int8_t)ratio_b;
+    s->v[PV_E4] = (int8_t)index_a;
+    s->v[PV_E5] = (int8_t)index_b;
+    s->v[PV_E6] = (int8_t)feedback;
+    s->v[PV_E7] = (int8_t)detune;
+    s->v[PV_MOD_D] = (int8_t)mod_d;
+    s->v[PV_MOD_S] = (int8_t)mod_s;
+}
+
+static void sound_swarm(sound_t *s, int32_t mode, int32_t note, int32_t spread, int32_t shape, int32_t shift, int32_t mix, int32_t sub, int32_t drift)
+{
+    s->v[PV_ENGINE] = ENGINE_SWARM;
+    s->v[PV_E0] = (int8_t)mode;
+    s->v[PV_NOTE] = (int8_t)note;
+    s->v[PV_E1] = (int8_t)spread;
+    s->v[PV_E2] = (int8_t)shape;
+    s->v[PV_E3] = (int8_t)shift;
+    s->v[PV_E4] = (int8_t)mix;
+    s->v[PV_E5] = (int8_t)sub;
+    s->v[PV_E6] = (int8_t)drift;
+    s->v[PV_E7] = 0;
+}
+
+/* a note length that lets a decay finish at the starting tempo, so AMP R does not cut it */
+static int8_t starter_len(int32_t decay) { return (int8_t)clamp((int32_t)(env_blocks(decay) * CTL / (FS * 15u / 120u)) + 1, 1, NSTEP); }
+
+/* it rings for its decay while the note lasts; at the note's end AMP R takes over */
+static void sound_perc(sound_t *s, int32_t mode, int32_t note, int32_t decay, int32_t fm, int32_t spread, int32_t harm, int32_t fold, int32_t bend, int32_t noise, int32_t click)
 {
     s->v[PV_ENGINE] = ENGINE_PERC;
     s->v[PV_E0] = (int8_t)mode;
     s->v[PV_NOTE] = (int8_t)note;
-    s->v[PV_E1] = (int8_t)decay;
+    s->v[PV_AMP_D] = (int8_t)decay;
+    s->v[PV_AMP_S] = 0;
+    s->v[PV_LEN] = starter_len(decay);
+    s->v[PV_E1] = (int8_t)fm;
     s->v[PV_E2] = (int8_t)spread;
     s->v[PV_E3] = (int8_t)harm;
-    s->v[PV_E4] = (int8_t)fold;
-    s->v[PV_E5] = (int8_t)bend;
-    s->v[PV_E6] = (int8_t)noise;
-    s->v[PV_E7] = (int8_t)attack;
+    s->v[PV_SHAPER] = (int8_t)fold;
+    s->v[PV_E4] = (int8_t)bend;
+    s->v[PV_E5] = (int8_t)noise;
+    s->v[PV_E6] = (int8_t)click;
+    s->v[PV_E7] = 0;
 }
 
 static void ui_init(void)
@@ -1224,7 +1356,7 @@ static void ui_init(void)
     for (i = 0; i < FM1_NCOL; i++)
         fm1_led_dim[i] = 0x1Eu;                  /* LED rows are bits 1..4: every LED glows when it is not lit */
     for (i = 0; i < NSOUND; i++)
-        sound_init(&sounds[i], i % FM6_NFACTORY);
+        sound_init(&sounds[i], i % FM_ALGS);
     for (i = 0; i < NPATTERN; i++)
         for (k = 0; k < NTRK; k++)
             track_init(&patterns[i].track[k], k);
@@ -1235,12 +1367,35 @@ static void ui_init(void)
     sound_phys(&sounds[3], PM_MEMB, 0, 52, 40, 30, 100, 40, 30);     /* toms */
     sound_phys(&sounds[4], PM_MEMB, 112, 76, 56, 44, 100, 14, 24);   /* hand drum */
     sound_phys(&sounds[5], PM_STRING, 56, 72, 84, 40, 96, 0, 0);     /* pluck */
-    sound_perc(&sounds[0], PERC_SKIN, 36, 82, 0, 0, 10, 50, 0, 0);       /* kick */
-    sound_perc(&sounds[1], PERC_SKIN, 50, 70, 50, 40, 20, 15, 70, 0);     /* snare */
-    sound_perc(&sounds[2], PERC_METAL, 72, 50, 100, 110, 40, 0, 60, 0);   /* hat */
+    sound_perc(&sounds[0], PERC_SKIN, 36, 82, 0, 0, 0, 10, 50, 0, 127);       /* kick */
+    sound_perc(&sounds[1], PERC_SKIN, 50, 70, 0, 64, 70, 20, 15, 70, 127);     /* snare */
+    sound_perc(&sounds[2], PERC_METAL, 72, 50, 60, 64, 110, 40, 0, 60, 127);   /* hat */
     sounds[2].v[PV_FLT_TYPE] = FLT_HP;
     sounds[2].v[PV_FLT_CUT] = 90;
-    sound_perc(&sounds[6], PERC_METAL, 60, 90, 90, 100, 50, 5, 5, 10);    /* metal hit */
+    sound_perc(&sounds[6], PERC_METAL, 60, 90, 60, 64, 100, 50, 5, 5, 117);    /* metal hit */
+    sound_fm(&sounds[7], 1, 36, 2, 2, 3, 70, 40, 0, 0, 70, 0);        /* bass */
+    sound_fm(&sounds[8], 4, 72, 2, 11, 6, 70, 40, 0, 30, 100, 0);     /* bell */
+    sounds[8].v[PV_AMP_D] = 110;
+    sounds[8].v[PV_AMP_S] = 0;
+    sounds[8].v[PV_LEN] = starter_len(110);
+    sound_fm(&sounds[9], 0, 48, 2, 6, 9, 90, 90, 40, 50, 80, 0);      /* metal clang */
+    sounds[9].v[PV_AMP_D] = 90;
+    sounds[9].v[PV_AMP_S] = 0;
+    sounds[9].v[PV_LEN] = starter_len(90);
+    sound_fm(&sounds[10], 3, 36, 2, 2, 3, 80, 70, 90, 0, 90, 60);     /* growl */
+    sound_fm(&sounds[11], 7, 60, 2, 3, 5, 80, 60, 0, 0, 64, 127);     /* organ */
+    sound_swarm(&sounds[12], SWARM_UNISON, 36, 50, 0, 0, 90, 60, 70);        /* drone */
+    sounds[12].v[PV_LEN] = (int8_t)LEN_HOLD;
+    sounds[12].v[PV_AMP_A] = 95;
+    sounds[12].v[PV_AMP_R] = 110;
+    sound_swarm(&sounds[13], SWARM_UNISON, 36, 40, 10, 0, 70, 40, 10);       /* big bass */
+    sound_swarm(&sounds[14], SWARM_OCTAVES, 48, 40, 80, 0, 80, 0, 60);       /* pulse pad */
+    sounds[14].v[PV_AMP_A] = 85;
+    sounds[14].v[PV_AMP_R] = 105;
+    sounds[14].v[PV_LFO1_RATE] = 30;
+    sounds[14].v[PV_SLOT_DST1] = MOD_DST_TIMBRE;
+    sounds[14].v[PV_SLOT_AMT1] = 30;
+    sound_swarm(&sounds[15], SWARM_UNISON, 48, 35, 0, 70, 60, 0, 10);        /* sync lead */
     ui.bpm = 120;
     ui.copy_src = NO_KEY;
     ui.track_key = NO_KEY;

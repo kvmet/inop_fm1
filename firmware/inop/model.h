@@ -7,7 +7,6 @@
 #define HALF_FRAMES 128u         /* I2S half buffer: 2.9 ms */
 #define NTRK 6u
 #define NVOICE 8u
-#define VOICE_FS 16000           /* one carrier peaks at 4000 of 32767 before the master; carriers add */
 #define NELEM(a) (sizeof(a) / sizeof((a)[0]))
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
 
@@ -17,6 +16,7 @@
 #define TRACK_LOCKS 270u
 #define SOUND_NONE 0xFFu
 #define STEP_INHERIT 0xFFu       /* a step's note, velocity or length that comes from its sound */
+#define LEN_HOLD (NSTEP + 1u)    /* a length: the note sounds until the track's next note */
 
 static inline int32_t clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline int32_t mulq15(int32_t a, int32_t b) { return (a * b) >> 15; }
@@ -43,7 +43,7 @@ typedef struct { int8_t v[PV_COUNT]; } pkt_t;
 /* project values: a trigger does not carry these. A page lists them as PV_COUNT + G_ */
 enum { G_DELAY_TIME, G_DELAY_FB, G_REVERB_SIZE, G_REVERB_DAMP, G_COUNT };
 #define ID_GLOBAL(g) (PV_COUNT + (g))
-enum { ENGINE_FM, ENGINE_PHYS, ENGINE_PERC, ENGINES };
+enum { ENGINE_FM, ENGINE_PHYS, ENGINE_PERC, ENGINE_SWARM, ENGINES };
 enum { PRIO_XXLOW, PRIO_XLOW, PRIO_LOW, PRIO_NORMAL, PRIO_HIGH, PRIO_XHIGH, PRIO_XXHIGH, PRIOS };
 typedef pkt_t sound_t;           /* a pool sound is a packet with no step applied */
 

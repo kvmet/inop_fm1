@@ -5,13 +5,14 @@
 #define ENV_END (1 << 14)        /* -60 dB: the last block fades from here to 0 */
 #define CTL_BITS 5
 _Static_assert((1 << CTL_BITS) == CTL, "the amp ramp divides by a shift");
+#define SHAPE_FULL 8192          /* an engine's full scale; SHAPE folds relative to this */
 #define MASTER_LIMIT 12000
 #define MASTER_CEILING 14000     /* the limiter's attack lets a few samples past MASTER_LIMIT */
 
 enum { FLT_OFF, FLT_LP, FLT_BP, FLT_HP, FLT_TYPES };
 enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
 enum { MOD_SRC_OFF, MOD_SRC_ENV, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_VEL, MOD_SRCS };
-enum { MOD_DST_OFF, MOD_DST_PITCH, MOD_DST_CUT, MOD_DST_RES, MOD_DST_LEVEL, MOD_DST_PAN, MOD_DST_DRIVE, MOD_DST_SHAPER, MOD_DST_CRUSH, MOD_DST_RATE, MOD_DSTS };
+enum { MOD_DST_OFF, MOD_DST_PITCH, MOD_DST_CUT, MOD_DST_RES, MOD_DST_LEVEL, MOD_DST_PAN, MOD_DST_DRIVE, MOD_DST_SHAPER, MOD_DST_CRUSH, MOD_DST_RATE, MOD_DST_TIMBRE, MOD_DSTS };
 enum { LFO_SINE, LFO_TRI, LFO_SAW, LFO_SQUARE, LFO_SH, LFO_SHAPES };
 enum { LFO_RETRIGGER, LFO_FREE, LFO_MODES };
 #define MOD_SLOTS 4u
@@ -37,6 +38,7 @@ typedef struct {
     int32_t a1, a2, a3, damp, ic1, ic2;
     int32_t hold;
     uint32_t hold_left;
+    int32_t shape_level, shape_gain;   /* Q15 */
 } chain_t;
 
 static uint32_t mod_rng = 0x2F6E2B1u;
@@ -55,12 +57,19 @@ static uint32_t env_blocks(int32_t time_id)
     return blocks ? blocks : 1u;
 }
 
+/* per block k of an exponential fall that reaches -60 dB in the table's time: 6.91 time constants */
+static int32_t env_fall_k(int32_t time_id)
+{
+    uint32_t k = 452853u / env_blocks(time_id);
+    return k > 65536u ? 65536 : (int32_t)k;
+}
+
 static void env_start(env_t *e, int32_t a, int32_t d, int32_t sus, int32_t r)
 {
     e->env = 0;
     e->inc = ENV_FULL / (int32_t)env_blocks(a);
-    e->decay_k = 65536 / (int32_t)env_blocks(d);
-    e->release_k = 65536 / (int32_t)env_blocks(r);
+    e->decay_k = env_fall_k(d);
+    e->release_k = env_fall_k(r);
     e->sustain = (ENV_FULL / 127) * clamp(sus, 0, 127);
     e->stage = ENV_ATTACK;
 }
@@ -175,6 +184,15 @@ static uint32_t env_polyline(const env_curve_t *c, const uint8_t *y, uint32_t w,
 }
 
 static const uint16_t SEMI_Q12[12] = {4096, 4340, 4598, 4871, 5161, 5468, 5793, 6137, 6502, 6889, 7298, 7732};
+#define NOTE0_INC 49765u         /* phase per sample at note 0 (8.18 Hz), >> 4 */
+
+/* phase per sample. pitch: 1/16 semitones above note 0 */
+static uint32_t note_inc(int32_t pitch)
+{
+    uint32_t q = (uint32_t)clamp(pitch, 0, 127 * 16 + 15), semi = q >> 4;
+    uint32_t v = ((NOTE0_INC * SEMI_Q12[semi % 12u]) >> 8) << (semi / 12u);
+    return v + (v >> 8) * (q & 15u);                 /* one 1/16 semitone is 0.36 %, and 1/256 is 0.39 % */
+}
 
 static uint32_t lfo_inc(int32_t rate)
 {
@@ -260,6 +278,7 @@ static void chain_start(chain_t *c, const pkt_t *p)
     c->ic1 = c->ic2 = 0;
     c->hold = 0;
     c->hold_left = 0;
+    c->shape_level = c->shape_gain = 0;
 }
 
 static void chain_release(chain_t *c)
@@ -297,11 +316,34 @@ static inline int32_t softclip(int32_t x)
     return x < 0 ? -y : y;
 }
 
+/* folds any value into -32768..32767 in one step */
 static inline int32_t wavefold(int32_t x)
 {
-    while (x > 32767 || x < -32767)
-        x = x > 0 ? 65534 - x : -65534 - x;
-    return x;
+    uint32_t u = ((uint32_t)x + 32768u) & 0x1FFFFu;
+    return u < 65536u ? (int32_t)u - 32768 : 98303 - (int32_t)u;
+}
+
+/* folding alone would hold the level at full scale until the driven signal falls under it. This gain follows the input's
+ * level until then. Below that point the folded signal falls by itself, and 1 / drive scales it back to the input's level.
+ * The follower's 47 ms is long enough that a low note's own cycle does not move the gain */
+static void chain_shape(chain_t *c, int32_t *x, int32_t shape)
+{
+    int32_t drive_q4 = 16 + shape * shape * 240 / 16129;     /* 127 drives by 16 */
+    int32_t floor = 32768 * 16 / drive_q4, peak = 0, target, ramp = c->shape_gain * (1 << CTL_BITS);
+    uint32_t i;
+    for (i = 0; i < CTL; i++) {
+        int32_t a = x[i] < 0 ? -x[i] : x[i];
+        peak = a > peak ? a : peak;
+    }
+    peak = clamp(peak, 0, SHAPE_FULL) * (32768 / SHAPE_FULL);
+    c->shape_level -= c->shape_level >> 6;
+    c->shape_level = peak > c->shape_level ? peak : c->shape_level;
+    target = c->shape_level > floor ? c->shape_level : floor;
+    for (i = 0; i < CTL; i++) {
+        ramp += target - c->shape_gain;
+        x[i] = ((wavefold((clamp(x[i], -60000, 60000) * drive_q4) >> 2) >> 2) * (ramp >> CTL_BITS)) >> 15;
+    }
+    c->shape_gain = target;
 }
 
 /* cheap effects in place; each is skipped at 0 */
@@ -312,12 +354,11 @@ static void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
     int32_t crush = clamp(p->v[PV_CRUSH] + (c->off[MOD_DST_CRUSH] >> 8), 0, 127);
     int32_t rate = clamp(p->v[PV_RATE] + (c->off[MOD_DST_RATE] >> 8), 0, 127);
     uint32_t i;
+    if (shape)
+        chain_shape(c, x, shape);
     if (drive)
         for (i = 0; i < CTL; i++)
             x[i] = softclip(clamp(x[i], -60000, 60000) * (8 + drive) >> 3);
-    if (shape)
-        for (i = 0; i < CTL; i++)
-            x[i] = wavefold(clamp(x[i], -60000, 60000) * (16 + shape) >> 4);
     if (crush) {
         int32_t mask = ~((1 << (1 + crush * 12 / 127)) - 1);
         for (i = 0; i < CTL; i++)
@@ -354,7 +395,8 @@ static void chain_filter(chain_t *c, uint32_t type, int32_t *x)
 /* adds one block to l and r; x is the engine's block and is overwritten. 0 when the envelope has ended */
 static int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int32_t *r)
 {
-    int32_t lvl = LEVEL_Q12[clamp(p->v[PV_LEVEL] + (c->off[MOD_DST_LEVEL] >> 8), 0, 127)];
+    int32_t vel = clamp(p->v[PV_VEL], 0, 127);
+    int32_t lvl = LEVEL_Q12[clamp(p->v[PV_LEVEL] + (c->off[MOD_DST_LEVEL] >> 8), 0, 127)] * vel * vel / (127 * 127);  /* velocity: 64 is -12 dB */
     int32_t pan = clamp(p->v[PV_PAN] + (c->off[MOD_DST_PAN] >> 8), -63, 63);
     int32_t gl = 4096 - (pan > 0 ? pan * 4096 / 63 : 0), gr = 4096 + (pan < 0 ? pan * 4096 / 63 : 0);
     int32_t amp, target_l, target_r, ramp_l, ramp_r;

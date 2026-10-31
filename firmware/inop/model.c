@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Steps, locks and packet resolution. No hardware here: tests/inop_test.c runs this on the host. */
 
-static void sound_init(sound_t *s, uint32_t patch)
+static void sound_init(sound_t *s, uint32_t fm_alg)
 {
     uint32_t i;
     for (i = 0; i < PV_COUNT; i++)
@@ -12,7 +12,7 @@ static void sound_init(sound_t *s, uint32_t patch)
     s->v[PV_LEVEL] = 104;
     s->v[PV_AMP_D] = 64;
     s->v[PV_AMP_S] = 127;
-    s->v[PV_AMP_R] = 64;
+    s->v[PV_AMP_R] = 30;
     s->v[PV_FLT_CUT] = 127;
     s->v[PV_MOD_D] = 64;
     s->v[PV_MOD_R] = 64;
@@ -25,16 +25,14 @@ static void sound_init(sound_t *s, uint32_t patch)
     s->v[PV_SLOT_DST1] = 1;
     s->v[PV_SLOT_SRC2] = 3;      /* LFO 2 to cutoff */
     s->v[PV_SLOT_DST2] = 2;
-    s->v[PV_SLOT_SRC3] = 4;      /* velocity to level */
-    s->v[PV_SLOT_DST3] = 4;
+    s->v[PV_SLOT_SRC3] = 4;      /* velocity to cutoff */
+    s->v[PV_SLOT_DST3] = 2;
     s->v[PV_PRIO] = PRIO_NORMAL;
-    s->v[PV_E0] = (int8_t)patch;
-    s->v[PV_E1] = 64;            /* the physical modeling engine's starting body; the FM engine ignores E1..E7 */
-    s->v[PV_E2] = 80;
-    s->v[PV_E3] = 80;
-    s->v[PV_E4] = 20;
-    s->v[PV_E5] = 100;
-    s->v[PV_E7] = 10;
+    s->v[PV_E0] = (int8_t)fm_alg;
+    s->v[PV_E1] = 2;             /* FM ratios: C 1, A 2, B 1 */
+    s->v[PV_E2] = 3;
+    s->v[PV_E3] = 2;
+    s->v[PV_E4] = 40;            /* FM index A */
 }
 
 static void track_init(track_pat_t *t, uint32_t base)

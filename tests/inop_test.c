@@ -4,17 +4,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "model.h"
 #include "model.c"
 #include "seq.c"
 #include "overdub.c"
-#include "fm6_core.c"
-#include "fm_chart.c"
 #include "voice_chain.c"
+#include "fm_engine.c"
 #include "perc_engine.c"
+#include "swarm_engine.c"
 #include "fx_sends.c"
 #include "phys_engine.c"
 #include "voice_steal.c"
+#define FM1_TICKS_PER_US 24u
+static uint32_t fm1_ticks(void) { return 0; }
+#define __attribute__(x)         /* the section names are the firmware's linker's */
+#include "voices.c"
+#undef __attribute__
 
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
@@ -587,33 +593,6 @@ static void test_meter_bar(void)
     CHECK(meter_bar(MASTER_CEILING >> 7, 160) == 20);
 }
 
-/* the chart's places hold what the renderer runs */
-static void test_fm_chart(void)
-{
-    uint32_t a, i, j;
-    uint8_t m[6];
-    static const uint8_t ALG1[6] = {1u << 1, 0, 1u << 3, 1u << 4, 1u << 5, 0};     /* 2>1, 6>5>4>3 */
-    fm_routes(0, m);
-    CHECK(memcmp(m, ALG1, 6) == 0);
-    CHECK(fm_feedback_op(0) == 5);
-    CHECK(fm_is_carrier(0, 0) && !fm_is_carrier(0, 1) && fm_is_carrier(0, 2));
-    fm_routes(31, m);
-    for (i = 0; i < 6u; i++)
-        CHECK(m[i] == 0 && fm_is_carrier(31, i));      /* algorithm 32: six carriers */
-    for (a = 0; a < 32u; a++) {
-        fm_routes(a, m);
-        for (i = 0; i < 6u; i++) {
-            CHECK(((FM_CELL[a][i] >> 4) == 0) == (fm_is_carrier(a, i) != 0));
-            for (j = 0; j < 6u; j++) {
-                if (i != j)
-                    CHECK(FM_CELL[a][i] != FM_CELL[a][j]);
-                if (m[i] >> j & 1u)
-                    CHECK((FM_CELL[a][j] >> 4) == (FM_CELL[a][i] >> 4) + 1u);
-            }
-        }
-    }
-}
-
 static void test_lfo_rate_doubles(void)
 {
     CHECK(lfo_inc(12) == lfo_inc(0) * 2u || lfo_inc(12) == lfo_inc(0) * 2u + 1u);
@@ -708,10 +687,10 @@ static void test_mod_routes(void)
     p.v[PV_SLOT_AMT3] = 100;
     p.v[PV_VEL] = 127;
     chain_mod(&c, &p, 0);
-    CHECK(c.off[MOD_DST_LEVEL] > (95 << 8));
+    CHECK(c.off[MOD_DST_CUT] > (95 << 8));
     p.v[PV_VEL] = 0;
     chain_mod(&c, &p, 0);
-    CHECK(c.off[MOD_DST_LEVEL] == 0);
+    CHECK(c.off[MOD_DST_CUT] == 0);
 }
 
 static void test_mod_opens_filter(void)
@@ -862,6 +841,11 @@ static void phys_packet(pkt_t *p, int32_t model, int32_t note)
     sound_init(p, 0);
     p->v[PV_ENGINE] = ENGINE_PHYS;
     p->v[PV_E0] = (int8_t)model;
+    p->v[PV_E1] = 64;
+    p->v[PV_E2] = p->v[PV_E3] = 80;
+    p->v[PV_E4] = 20;
+    p->v[PV_E5] = 100;
+    p->v[PV_E7] = 10;
     p->v[PV_NOTE] = (int8_t)note;
     p->v[PV_VEL] = 127;
 }
@@ -938,19 +922,23 @@ static void test_phys_pitch(void)
     CHECK(offset >= 98u && offset <= 103u);             /* the modulation offset moves pitch too */
 }
 
-static void perc_packet(pkt_t *p, int32_t mode, int32_t note, int32_t decay, int32_t spread, int32_t harm, int32_t fold, int32_t bend, int32_t noise, int32_t attack)
+static void perc_packet(pkt_t *p, int32_t mode, int32_t note, int32_t decay, int32_t spread, int32_t harm, int32_t fold, int32_t bend, int32_t noise, int32_t click)
 {
     sound_init(p, 0);
     p->v[PV_ENGINE] = ENGINE_PERC;
     p->v[PV_E0] = (int8_t)mode;
     p->v[PV_NOTE] = (int8_t)note;
-    p->v[PV_E1] = (int8_t)decay;
+    p->v[PV_AMP_D] = (int8_t)decay;
+    p->v[PV_AMP_S] = 0;
+    p->v[PV_AMP_R] = 127;
+    p->v[PV_E1] = 0;
     p->v[PV_E2] = (int8_t)spread;
     p->v[PV_E3] = (int8_t)harm;
-    p->v[PV_E4] = (int8_t)fold;
-    p->v[PV_E5] = (int8_t)bend;
-    p->v[PV_E6] = (int8_t)noise;
-    p->v[PV_E7] = (int8_t)attack;
+    p->v[PV_SHAPER] = (int8_t)fold;
+    p->v[PV_E4] = (int8_t)bend;
+    p->v[PV_E5] = (int8_t)noise;
+    p->v[PV_E6] = (int8_t)click;
+    p->v[PV_E7] = 0;
 }
 
 /* one block; returns its peak and adds its rising zero crossings to *crossings */
@@ -960,7 +948,7 @@ static int32_t perc_block(perc_voice_t *S, const pkt_t *p, int32_t *alive, uint3
     uint32_t i;
     for (i = 0; i < CTL; i++)
         out[i] = 0;
-    *alive = perc_render(S, p, out, 0);
+    *alive = perc_render(S, p, out, 0, 0);
     for (i = 0; i < CTL; i++) {
         if (abs(out[i]) > peak)
             peak = abs(out[i]);
@@ -1001,13 +989,13 @@ static void test_perc_pitch(void)
 {
     pkt_t p;
     uint32_t n, blocks = (uint32_t)(FS / CTL);          /* about one second */
-    perc_packet(&p, PERC_SKIN, 69, 120, 0, 0, 0, 0, 0, 127);
+    perc_packet(&p, PERC_SKIN, 69, 120, 0, 0, 0, 0, 0, 0);
     n = perc_crossings(&p, 0, blocks);
     CHECK(n > 430 && n < 450);                          /* A4 is 440 Hz */
-    perc_packet(&p, PERC_SKIN, 81, 120, 0, 0, 0, 0, 0, 127);
+    perc_packet(&p, PERC_SKIN, 81, 120, 0, 0, 0, 0, 0, 0);
     n = perc_crossings(&p, 0, blocks);
     CHECK(n > 865 && n < 895);                          /* an octave up */
-    perc_packet(&p, PERC_METAL, 69, 120, 0, 0, 0, 0, 0, 127);
+    perc_packet(&p, PERC_METAL, 69, 120, 0, 0, 0, 0, 0, 0);
     CHECK(perc_crossings(&p, 0, blocks) > 400);         /* with harm 0 the modulators are silent */
 }
 
@@ -1015,11 +1003,11 @@ static void test_perc_bend(void)
 {
     pkt_t p;
     uint32_t early, late;
-    perc_packet(&p, PERC_SKIN, 45, 120, 0, 0, 0, 80, 0, 127);
+    perc_packet(&p, PERC_SKIN, 45, 120, 0, 0, 0, 80, 0, 0);
     early = perc_crossings(&p, 0, 30);
     late = perc_crossings(&p, 2000, 30);
     CHECK(early > late * 2u);
-    perc_packet(&p, PERC_SKIN, 45, 120, 0, 0, 0, 0, 0, 127);
+    perc_packet(&p, PERC_SKIN, 45, 120, 0, 0, 0, 0, 0, 0);
     CHECK(perc_crossings(&p, 2000, 30) >= late - 2u && perc_crossings(&p, 2000, 30) <= late + 2u);   /* it settles on the note */
 }
 
@@ -1028,8 +1016,9 @@ static void test_perc_spread_and_harm(void)
     int32_t level[PERC_PARTIALS];
     uint32_t i;
     for (i = 0; i < PERC_PARTIALS; i++) {
-        CHECK(perc_ratio_q8(0, i) == 256);              /* 0 is unison */
-        CHECK(perc_ratio_q8(64, i) == 256u * (i + 1u)); /* 64 is the harmonic series */
+        CHECK(perc_ratio_q8(PERC_BAR, 0, i) == 256);    /* 0 is unison */
+        CHECK(perc_ratio_q8(PERC_TONE, 64, i) == 256u * (i + 1u));
+        CHECK(perc_ratio_q8(PERC_BAR, 64, i) == PERC_RATIOS[PERC_BAR][i]);
     }
     perc_levels(0, 32767, level);
     CHECK(level[0] > 32000 && level[1] == 0);
@@ -1044,15 +1033,15 @@ static void test_perc_decay_ends_the_voice(void)
 {
     pkt_t p;
     uint32_t short_life, long_life;
-    perc_packet(&p, PERC_SKIN, 45, 60, 0, 0, 0, 0, 0, 127);
+    perc_packet(&p, PERC_SKIN, 45, 60, 0, 0, 0, 0, 0, 0);
     short_life = perc_life(&p);
-    CHECK(short_life + 40u > env_blocks(60) && short_life < env_blocks(60) * 2u + 40u);      /* -60 dB at about E1's time */
-    perc_packet(&p, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 127);
+    CHECK(short_life + 40u > env_blocks(60) && short_life < env_blocks(60) * 2u + 40u);      /* -60 dB at about AMP D's time */
+    perc_packet(&p, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 0);
     long_life = perc_life(&p);
     CHECK(long_life > short_life * 4u && long_life < 400000u);
-    perc_packet(&p, PERC_SKIN, 45, 0, 0, 127, 0, 0, 0, 0);
+    perc_packet(&p, PERC_SKIN, 45, 0, 0, 127, 0, 0, 0, 127);
     CHECK(perc_life(&p) < 100u);                        /* the shortest settings */
-    perc_packet(&p, PERC_METAL, 45, 127, 90, 127, 127, 127, 127, 0);
+    perc_packet(&p, PERC_METAL, 45, 127, 90, 127, 127, 127, 127, 127);
     CHECK(perc_life(&p) < 400000u);                     /* the longest settings */
 }
 
@@ -1061,8 +1050,8 @@ static void test_perc_harm_shortens_upper_partials(void)
 {
     static perc_voice_t a, b;
     pkt_t low, high;
-    perc_packet(&low, PERC_SKIN, 45, 100, 64, 40, 0, 0, 0, 127);
-    perc_packet(&high, PERC_SKIN, 45, 100, 64, 127, 0, 0, 0, 127);
+    perc_packet(&low, PERC_SKIN, 45, 100, 64, 40, 0, 0, 0, 0);
+    perc_packet(&high, PERC_SKIN, 45, 100, 64, 127, 0, 0, 0, 0);
     perc_start(&a, &low, 1);
     perc_start(&b, &high, 1);
     CHECK(a.decay_k[5] < a.decay_k[0]);
@@ -1083,6 +1072,7 @@ static void test_perc_level_bound(void)
                         pkt_t p;
                         int32_t alive = 1, last = 0;
                         perc_packet(&p, (int32_t)mode, 45, 70, V[a], V[b], V[c], V[d], V[d], V[a]);
+                        p.v[PV_E1] = V[b];
                         perc_start(&S, &p, 7);
                         for (block = 0; alive && block < 300u; block++) {
                             int32_t peak = perc_block(&S, &p, &alive, 0, &last);
@@ -1108,105 +1098,983 @@ static int32_t perc_peak_at(const pkt_t *p, uint32_t block_at)
     return peak;
 }
 
-/* without the punch gain a folded sum stays at full scale until the driven sum falls under it */
-static void test_perc_fold_keeps_punch(void)
-{
-    pkt_t dry, folded;
-    uint32_t mid = env_blocks(100) / 4u;
-    int32_t dry_peak, fold_peak;
-    perc_packet(&dry, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 127);
-    perc_packet(&folded, PERC_SKIN, 45, 100, 0, 0, 127, 0, 0, 127);
-    dry_peak = perc_peak_at(&dry, mid);
-    fold_peak = perc_peak_at(&folded, mid);
-    CHECK(perc_peak_at(&folded, 60) > fold_peak * 2);   /* folded output still falls */
-    CHECK(fold_peak < dry_peak * 3 / 2 && fold_peak > dry_peak / 3);
-    CHECK(perc_crossings(&folded, 60, 60) > perc_crossings(&dry, 60, 60));    /* and folding adds harmonics */
-    mid = env_blocks(100) * 4u / 5u;                    /* near the end they meet again */
-    fold_peak = perc_peak_at(&folded, mid);
-    dry_peak = perc_peak_at(&dry, mid);
-    CHECK(fold_peak < dry_peak * 2 + 20 && fold_peak * 2 + 20 > dry_peak);
-}
-
-static void test_perc_fold_function(void)
+static void test_wavefold(void)
 {
     int32_t x;
-    CHECK(perc_fold(0) == 0 && perc_fold(32767) == 32767);
-    CHECK(abs(perc_fold(40000) - (65534 - 40000)) <= 1);
+    CHECK(wavefold(0) == 0 && wavefold(32767) == 32767);
+    CHECK(abs(wavefold(40000) - (65534 - 40000)) <= 1);
     for (x = -500000; x <= 500000; x += 37) {
-        int32_t y = perc_fold(x);
+        int32_t y = wavefold(x);
         CHECK(y >= -32768 && y <= 32767);
-        CHECK(abs(y - wavefold(x)) <= 40);              /* the chain's fold, in one step: their periods differ by 1 in 32768 */
     }
 }
 
-static void test_perc_metal_and_noise(void)
+static void test_perc_noise_seed(void)
 {
     static perc_voice_t a, b;
     pkt_t p;
     int32_t ao[CTL], bo[CTL];
     uint32_t i;
     int differs = 0;
-    perc_packet(&p, PERC_SKIN, 45, 80, 60, 100, 0, 0, 0, 127);
-    perc_start(&a, &p, 1);
-    perc_packet(&p, PERC_METAL, 45, 80, 60, 100, 0, 0, 0, 127);
-    perc_start(&b, &p, 1);
-    for (i = 0; i < CTL; i++)
-        ao[i] = bo[i] = 0;
-    for (i = 0; i < 8u; i++) {
-        pkt_t skin;
-        perc_packet(&skin, PERC_SKIN, 45, 80, 60, 100, 0, 0, 0, 127);
-        (void)perc_render(&a, &skin, ao, 0);
-        (void)perc_render(&b, &p, bo, 0);
-    }
-    for (i = 0; i < CTL; i++)
-        differs |= ao[i] != bo[i];
-    CHECK(differs);                                     /* METAL modulates */
-    perc_packet(&p, PERC_SKIN, 45, 80, 0, 0, 0, 0, 90, 127);
+    perc_packet(&p, PERC_SKIN, 45, 80, 0, 0, 0, 0, 90, 0);
     perc_start(&a, &p, 1);
     perc_start(&b, &p, 99);
     for (i = 0; i < CTL; i++)
         ao[i] = bo[i] = 0;
-    (void)perc_render(&a, &p, ao, 0);
-    (void)perc_render(&b, &p, bo, 0);
-    differs = 0;
+    (void)perc_render(&a, &p, ao, 0, 0);
+    (void)perc_render(&b, &p, bo, 0, 0);
     for (i = 0; i < CTL; i++)
         differs |= ao[i] != bo[i];
     CHECK(differs);                                     /* NOISE differs by seed */
-    perc_packet(&p, PERC_SKIN, 45, 80, 0, 0, 0, 0, 0, 127);
+    perc_packet(&p, PERC_SKIN, 45, 80, 0, 0, 0, 0, 0, 0);
     perc_start(&a, &p, 1);
     perc_start(&b, &p, 99);
     for (i = 0; i < CTL; i++)
         ao[i] = bo[i] = 0;
-    (void)perc_render(&a, &p, ao, 0);
-    (void)perc_render(&b, &p, bo, 0);
+    (void)perc_render(&a, &p, ao, 0, 0);
+    (void)perc_render(&b, &p, bo, 0, 0);
     CHECK(memcmp(ao, bo, sizeof ao) == 0);              /* with no noise and no click, the seed does nothing */
 }
 
-static void test_perc_attack(void)
+static void test_perc_click(void)
 {
+    static perc_voice_t a, b;
     pkt_t hard, soft;
-    perc_packet(&hard, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 0);
-    perc_packet(&soft, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 127);
+    int32_t ao[CTL], bo[CTL];
+    uint32_t i;
+    perc_packet(&hard, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 127);
+    perc_packet(&soft, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 0);
     CHECK(perc_peak_at(&hard, 0) > perc_peak_at(&soft, 0));
-    {
-        static perc_voice_t a, b;
-        int32_t ao[CTL], bo[CTL];
+    perc_start(&a, &hard, 1);
+    perc_start(&b, &hard, 99);
+    for (i = 0; i < CTL; i++)
+        ao[i] = bo[i] = 0;
+    (void)perc_render(&a, &hard, ao, 0, 0);
+    (void)perc_render(&b, &hard, bo, 0, 0);
+    CHECK(memcmp(ao, bo, sizeof ao) != 0);              /* the click is noise, with NOISE at 0 */
+}
+
+/* power at one frequency over 8192 samples after skip blocks. inc: phase per sample, as a partial's */
+static double perc_power_at(const pkt_t *p, uint32_t inc, uint32_t skip)
+{
+    enum { N = 8192 };
+    static perc_voice_t S;
+    double re = 0, im = 0;
+    uint32_t ph = 0, b, n = 0;
+    perc_start(&S, p, 1);
+    for (b = 0; b < skip; b++) {
+        int32_t out[CTL] = {0};
+        (void)perc_render(&S, p, out, 0, 0);
+    }
+    while (n < N) {
+        int32_t out[CTL] = {0};
         uint32_t i;
-        perc_start(&a, &hard, 1);
-        perc_start(&b, &hard, 99);
+        (void)perc_render(&S, p, out, 0, 0);
+        for (i = 0; i < CTL && n < N; i++, n++) {
+            double window = n < N / 2 ? n : N - n;      /* its side lobes fall fast enough to separate the modes' partials */
+            re += window * out[i] * SINE[ph >> 22];
+            im += window * out[i] * SINE[(ph + 0x40000000u) >> 22];
+            ph += inc;
+        }
+    }
+    return re * re + im * im;
+}
+
+/* each mode's partials sound at its table's frequencies, and not at another mode's */
+static void test_perc_modes_set_the_partials(void)
+{
+    uint32_t mode, other, base = note_inc(57 * 16);
+    for (mode = 0; mode < PERC_MODES; mode++) {
+        pkt_t p;
+        uint32_t inc = (uint32_t)(((uint64_t)base * PERC_RATIOS[mode][1]) >> 8);
+        double own;
+        perc_packet(&p, (int32_t)mode, 57, 120, 64, 127, 0, 0, 0, 0);
+        own = perc_power_at(&p, inc, 0);
+        for (other = 0; other < PERC_MODES; other++)
+            if (other != mode) {
+                perc_packet(&p, (int32_t)other, 57, 120, 64, 127, 0, 0, 0, 0);
+                CHECK(own > perc_power_at(&p, inc, 0) * 100.0);
+            }
+    }
+}
+
+/* FM makes sidebands from a lone partial, falls over half of the decay, and keeps no voice alive */
+static void test_perc_fm(void)
+{
+    pkt_t p, dry;
+    uint32_t base = note_inc(57 * 16), inc = base * 3u, late;     /* a carrier at 1 and a modulator at 2 add a sideband at 3 */
+    double early;
+    perc_packet(&dry, PERC_TONE, 57, 100, 64, 0, 0, 0, 0, 0);
+    p = dry;
+    p.v[PV_E1] = 90;
+    early = perc_power_at(&p, inc, 0);
+    CHECK(early > perc_power_at(&dry, inc, 0) * 1000.0);
+    late = env_blocks(100) / 2u;                        /* relative to the note, which falls too */
+    CHECK(early / perc_power_at(&p, base, 0) > perc_power_at(&p, inc, late) / perc_power_at(&p, base, late) * 100.0);
+    CHECK(perc_life(&p) * 10u < perc_life(&dry) * 11u && perc_life(&dry) * 10u < perc_life(&p) * 11u);
+}
+
+/* noise falls with the bend, unless the partials end first */
+static void test_perc_noise_fall(void)
+{
+    static perc_voice_t S;
+    pkt_t p, dry;
+    perc_packet(&p, PERC_SKIN, 45, 110, 0, 0, 0, 0, 90, 0);
+    perc_start(&S, &p, 1);
+    CHECK(S.noise_k == S.bend_k);
+    perc_packet(&p, PERC_SKIN, 45, 50, 0, 0, 0, 0, 90, 0);
+    perc_packet(&dry, PERC_SKIN, 45, 50, 0, 0, 0, 0, 0, 0);
+    perc_start(&S, &p, 1);
+    CHECK(S.noise_k == S.decay_k[0]);
+    CHECK(perc_life(&p) * 10u < perc_life(&dry) * 13u);
+}
+
+/* noise is a transient: after the bend's time, SUS holds only the partials. The seed changes only the noise */
+static void test_perc_noise_ignores_sustain(void)
+{
+    static perc_voice_t a, b;
+    pkt_t p;
+    uint32_t n, i, ends = env_blocks(100) / 4u + 235u + 2u;
+    int32_t worst = 0;
+    perc_packet(&p, PERC_SKIN, 45, 100, 0, 0, 0, 0, 127, 0);
+    p.v[PV_AMP_S] = 90;
+    perc_start(&a, &p, 1);
+    perc_start(&b, &p, 99);
+    for (n = 0; n < ends + 32u; n++) {
+        int32_t ao[CTL] = {0}, bo[CTL] = {0};
+        (void)perc_render(&a, &p, ao, 0, 0);
+        (void)perc_render(&b, &p, bo, 0, 0);
+        for (i = 0; n >= ends && i < CTL; i++)
+            worst = abs(ao[i] - bo[i]) > worst ? abs(ao[i] - bo[i]) : worst;
+    }
+    CHECK(worst == 0);
+}
+
+static void fm_packet(pkt_t *p, int32_t alg, int32_t note, int32_t c, int32_t a, int32_t b, int32_t index_a, int32_t index_b, int32_t feedback, int32_t detune)
+{
+    sound_init(p, (uint32_t)alg);
+    p->v[PV_NOTE] = (int8_t)note;
+    p->v[PV_E1] = (int8_t)c;
+    p->v[PV_E2] = (int8_t)a;
+    p->v[PV_E3] = (int8_t)b;
+    p->v[PV_E4] = (int8_t)index_a;
+    p->v[PV_E5] = (int8_t)index_b;
+    p->v[PV_E6] = (int8_t)feedback;
+    p->v[PV_E7] = (int8_t)detune;
+}
+
+/* the routes as data, slowly: each algorithm's loop must match this sample for sample */
+static void test_fm_loops_match_routes(void)
+{
+    uint32_t alg, op, j, b, s;
+    for (alg = 0; alg < FM_ALGS; alg++) {
+        fm_voice_t f;
+        pkt_t p;
+        uint32_t phase[FM_OPS] = {0, 0, 0, 0}, inc[FM_OPS];
+        int32_t h1 = 0, h2 = 0, dc = 0, detune, bad = 0;
+        fm_packet(&p, (int32_t)alg, 57, 2, 4, 3, 90, 70, 60, 20);
+        fm_start(&f, &p);
+        detune = fm_squared(p.v[PV_E7], 16384);
+        inc[FM_C] = fm_op_inc(note_inc(57 * 16), 2, 0);
+        inc[FM_A] = fm_op_inc(note_inc(57 * 16), 4, detune);
+        inc[FM_B1] = fm_op_inc(note_inc(57 * 16), 3, -detune);
+        inc[FM_B2] = fm_op_inc(note_inc(57 * 16), 3, detune / 2);
+        for (b = 0; b < 40u; b++) {
+            int32_t out[CTL] = {0};
+            fm_render(&f, &p, out, 0, 32768, 0);
+            for (s = 0; s < CTL; s++) {
+                int32_t val[FM_OPS], y = 0, x;
+                for (op = FM_OPS; op-- > 0;) {
+                    int32_t m = op == FM_B2 ? ((h1 + h2) >> 1) * f.feedback >> 15 : 0;
+                    for (j = 0; j < FM_OPS; j++)
+                        if (FM_ROUTES[alg][op] >> j & 1u)
+                            m += (val[j] * (j == FM_A ? fm_squared(p.v[PV_E4], 32767) : fm_squared(p.v[PV_E5], 32767))) >> 15;
+                    val[op] = SINE[(phase[op] + (uint32_t)m * (1u << FM_SHIFT)) >> 22];
+                    phase[op] += inc[op];
+                    if (fm_is_carrier(alg, op))
+                        y += op == FM_C ? val[op] : (val[op] * (op == FM_A ? fm_squared(p.v[PV_E4], 32767) : fm_squared(p.v[PV_E5], 32767))) >> 15;
+                }
+                h2 = h1;
+                h1 = val[FM_B2];
+                x = y * 256 - dc;
+                dc += x >> 10;
+                bad += out[s] != (((x >> 8) * f.mix_gain) >> 15);
+            }
+        }
+        CHECK(bad == 0);
+    }
+}
+
+static void test_fm_routes_run_forward(void)
+{
+    uint32_t alg, op, j;
+    for (alg = 0; alg < FM_ALGS; alg++) {
+        CHECK(fm_is_carrier(alg, FM_C));
+        for (op = 0; op < FM_OPS; op++)
+            for (j = 0; j <= op; j++)
+                CHECK(!(FM_ROUTES[alg][op] >> j & 1u));
+    }
+}
+
+/* power at one frequency over 8192 samples, with the MOD envelope held at mod_q15 */
+static double fm_power_at(const pkt_t *p, uint32_t inc, int32_t mod_q15)
+{
+    enum { N = 8192 };
+    fm_voice_t f;
+    double re = 0, im = 0;
+    uint32_t ph = 0, n = 0;
+    fm_start(&f, p);
+    while (n < N) {
+        int32_t out[CTL] = {0};
+        uint32_t i;
+        fm_render(&f, p, out, 0, mod_q15, 0);
+        for (i = 0; i < CTL && n < N; i++, n++) {
+            double window = n < N / 2 ? n : N - n;
+            re += window * out[i] * SINE[ph >> 22];
+            im += window * out[i] * SINE[(ph + 0x40000000u) >> 22];
+            ph += inc;
+        }
+    }
+    return re * re + im * im;
+}
+
+static void test_fm_sound(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16);
+    double power;
+    fm_packet(&p, 6, 57, 2, 3, 2, 0, 0, 0, 0);          /* C at 1, A at 2 */
+    p.v[PV_E4] = 90;
+    power = fm_power_at(&p, base * 3u, 32768);          /* a sideband at 3 */
+    q = p;
+    q.v[PV_E4] = 0;
+    CHECK(power > fm_power_at(&q, base * 3u, 32768) * 1000.0);    /* the index makes it */
+    CHECK(power > fm_power_at(&p, base * 3u, 0) * 1000.0);        /* the MOD envelope scales it */
+    q = p;
+    q.v[PV_E2] = 4;                                     /* A at 3 makes a sideband at 4, and A at 2 makes only odd ones */
+    CHECK(fm_power_at(&q, base * 4u, 32768) > fm_power_at(&p, base * 4u, 32768) * 1000.0);
+    fm_packet(&p, 7, 57, 2, 2, 4, 0, 127, 0, 0);        /* B at 3, sounding */
+    q = p;
+    q.v[PV_E6] = 90;
+    CHECK(fm_power_at(&q, base * 6u, 32768) > fm_power_at(&p, base * 6u, 32768) * 100.0);    /* feedback adds harmonics of B2 */
+    q = p;
+    q.v[PV_E7] = 127;
+    CHECK(fm_power_at(&q, fm_op_inc(base, 4, -fm_squared(127, 16384)), 32768) > fm_power_at(&p, fm_op_inc(base, 4, -fm_squared(127, 16384)), 32768) * 2.0);    /* detune moves B1 */
+    CHECK(fm_op_inc(note_inc(127 * 16), 15, 0) == 0u);  /* over Nyquist it would alias */
+}
+
+/* the MOD envelope moves the index on a real voice, and holds it at MOD SUS */
+static void test_fm_mod_envelope(void)
+{
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    pkt_t p;
+    uint32_t b, i;
+    fm_packet(&p, 0, 57, 2, 3, 3, 90, 90, 0, 0);
+    p.v[PV_MOD_D] = 64;
+    p.v[PV_MOD_S] = 0;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < env_blocks(64) * 2u; b++) {
         for (i = 0; i < CTL; i++)
-            ao[i] = bo[i] = 0;
-        (void)perc_render(&a, &hard, ao, 0);
-        (void)perc_render(&b, &hard, bo, 0);
-        CHECK(memcmp(ao, bo, sizeof ao) != 0);          /* a low attack adds the noise click, with NOISE at 0 */
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
     }
+    CHECK(voices[0].engine.fm.gain_a < fm_squared(p.v[PV_E4], 32767) / 100);
+    p.v[PV_MOD_S] = 127;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < env_blocks(64) * 2u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+    }
+    CHECK(voices[0].engine.fm.gain_a > fm_squared(p.v[PV_E4], 32767) * 9 / 10);
+}
+
+static void test_fm_level_bound(void)
+{
+    static const int8_t V[3] = {0, 64, 127};
+    uint32_t alg, a, b, c, block, i;
+    int32_t worst = 0;
+    for (alg = 0; alg < FM_ALGS; alg++)
+        for (a = 0; a < 3u; a++)
+            for (b = 0; b < 3u; b++)
+                for (c = 0; c < 3u; c++) {
+                    fm_voice_t f;
+                    pkt_t p;
+                    fm_packet(&p, (int32_t)alg, 45, 2, 3, 4, V[a], V[b], V[c], V[a]);
+                    fm_start(&f, &p);
+                    for (block = 0; block < 300u; block++) {
+                        int32_t out[CTL] = {0};
+                        fm_render(&f, &p, out, 0, 32768, 0);
+                        for (i = 0; i < CTL; i++)
+                            worst = abs(out[i]) > worst ? abs(out[i]) : worst;
+                    }
+                }
+    CHECK(worst <= FM_PEAK * 3 / 2);
+    CHECK(worst >= FM_PEAK / 2);
+}
+
+/* feedback puts an offset in B2's output, and the mean over whole periods shows what is left of it */
+static void test_fm_removes_offset(void)
+{
+    enum { PERIODS = 32 };
+    fm_voice_t f;
+    pkt_t p;
+    uint32_t b, i, n = 0, samples = (uint32_t)(PERIODS * (4294967296.0 / fm_op_inc(note_inc(45 * 16), 2, 0)));
+    int64_t sum = 0;
+    fm_packet(&p, 7, 45, 2, 2, 2, 0, 127, 127, 0);
+    fm_start(&f, &p);
+    for (b = 0; n < samples; b++) {
+        int32_t out[CTL] = {0};
+        fm_render(&f, &p, out, 0, 32768, 0);
+        for (i = 0; b >= 400u && i < CTL && n < samples; i++, n++)
+            sum += out[i];
+    }
+    CHECK(llabs(sum / (int64_t)samples) < 12);
+}
+
+static void swarm_packet(pkt_t *p, int32_t mode, int32_t note, int32_t spread, int32_t shape, int32_t shift, int32_t mix, int32_t sub, int32_t drift)
+{
+    sound_init(p, 0);
+    p->v[PV_ENGINE] = ENGINE_SWARM;
+    p->v[PV_E0] = (int8_t)mode;
+    p->v[PV_NOTE] = (int8_t)note;
+    p->v[PV_E1] = (int8_t)spread;
+    p->v[PV_E2] = (int8_t)shape;
+    p->v[PV_E3] = (int8_t)shift;
+    p->v[PV_E4] = (int8_t)mix;
+    p->v[PV_E5] = (int8_t)sub;
+    p->v[PV_E6] = (int8_t)drift;
+}
+
+/* fills buf with n samples, after skip blocks */
+static void swarm_samples(const pkt_t *p, int32_t *buf, uint32_t n, uint32_t skip, int32_t timbre)
+{
+    swarm_voice_t S;
+    uint32_t b, i = 0;
+    swarm_start(&S, p, 12345u);
+    for (b = 0; i < n; b++) {
+        int32_t out[CTL] = {0};
+        uint32_t s;
+        swarm_render(&S, p, out, 0, timbre);
+        for (s = 0; b >= skip && s < CTL && i < n; s++)
+            buf[i++] = out[s];
+    }
+}
+
+#define SWARM_N 8192u
+static int32_t swarm_buf[SWARM_N];
+
+static double swarm_power_at(const pkt_t *p, uint32_t inc, int32_t timbre)
+{
+    double re = 0, im = 0;
+    uint32_t ph = 0, n;
+    swarm_samples(p, swarm_buf, SWARM_N, 8u, timbre);
+    for (n = 0; n < SWARM_N; n++) {
+        double window = n < SWARM_N / 2u ? n : SWARM_N - n;
+        re += window * swarm_buf[n] * SINE[ph >> 22];
+        im += window * swarm_buf[n] * SINE[(ph + 0x40000000u) >> 22];
+        ph += inc;
+    }
+    return re * re + im * im;
+}
+
+static double swarm_rms(const pkt_t *p)
+{
+    double e = 0;
+    uint32_t n;
+    swarm_samples(p, swarm_buf, SWARM_N, 8u, 0);
+    for (n = 0; n < SWARM_N; n++)
+        e += (double)swarm_buf[n] * swarm_buf[n];
+    return e / SWARM_N;
+}
+
+static void test_swarm_pitch_and_shape(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16);
+    uint32_t n, crossings = 0;
+    int32_t last = 0;
+    swarm_packet(&p, SWARM_UNISON, 69, 0, 0, 0, 0, 0, 0);       /* the center saw alone: A4 is 440 Hz */
+    swarm_samples(&p, swarm_buf, SWARM_N, 8u, 0);
+    for (n = 0; n < SWARM_N; n++) {
+        crossings += last < 0 && swarm_buf[n] >= 0;
+        last = swarm_buf[n];
+    }
+    CHECK(crossings > 75u && crossings < 88u);
+    swarm_packet(&p, SWARM_UNISON, 57, 0, 0, 0, 0, 0, 0);       /* a saw has a 2nd harmonic */
+    q = p;
+    q.v[PV_E2] = 64;                                            /* a square does not */
+    CHECK(swarm_power_at(&p, base * 2u, 0) > swarm_power_at(&q, base * 2u, 0) * 100.0);
+    q.v[PV_E2] = 127;                                           /* a narrow pulse does again */
     {
-        static perc_voice_t a;
-        int32_t alive, last = 0, first;
-        perc_start(&a, &soft, 1);
-        first = perc_block(&a, &soft, &alive, 0, &last);
-        CHECK(first < PERC_PEAK / 8);                   /* the longest onset starts quietly */
+        pkt_t square = q;
+        square.v[PV_E2] = 64;
+        CHECK(swarm_power_at(&q, base * 2u, 0) > swarm_power_at(&square, base * 2u, 0) * 100.0);
     }
+    CHECK(swarm_power_at(&p, base * 2u, 64) * 100.0 < swarm_power_at(&p, base * 2u, 0));   /* TIMBRE moves SHAPE */
+}
+
+/* 3 dB over the whole of SHAPE */
+static void test_swarm_shape_keeps_loudness(void)
+{
+    pkt_t p;
+    int32_t shape;
+    double lo = 1e30, hi = 0;
+    for (shape = 0; shape <= 127; shape += 16) {
+        double e;
+        swarm_packet(&p, SWARM_UNISON, 57, 0, shape, 0, 0, 0, 0);
+        e = swarm_rms(&p);
+        lo = e < lo ? e : lo;
+        hi = e > hi ? e : hi;
+    }
+    CHECK(hi < lo * 2.0);
+}
+
+static void test_swarm_spread_mode_mix_sub(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16);
+    uint32_t outer = (uint32_t)(((uint64_t)base * (65536u + 7042u)) >> 16);
+    swarm_packet(&p, SWARM_UNISON, 57, 127, 0, 0, 127, 0, 0);
+    q = p;
+    q.v[PV_E1] = 0;
+    CHECK(swarm_power_at(&p, outer, 0) > swarm_power_at(&q, outer, 0) * 100.0);     /* SPREAD reaches the outer oscillator */
+    q = p;
+    q.v[PV_E4] = 0;
+    CHECK(swarm_power_at(&p, outer, 0) > swarm_power_at(&q, outer, 0) * 100.0);     /* MIX 0 leaves the center alone */
+    swarm_packet(&p, SWARM_OCTAVES, 57, 0, 64, 0, 127, 0, 0);
+    q = p;
+    q.v[PV_E0] = SWARM_UNISON;
+    CHECK(swarm_power_at(&p, base >> 1, 0) > swarm_power_at(&q, base >> 1, 0) * 100.0);
+    swarm_packet(&p, SWARM_UNISON, 57, 0, 64, 0, 0, 127, 0);
+    q = p;
+    q.v[PV_E5] = 0;
+    CHECK(swarm_power_at(&p, base >> 1, 0) > swarm_power_at(&q, base >> 1, 0) * 100.0);    /* SUB */
+}
+
+/* SUB's level answers to SUB alone, and it leaves the oscillators alone */
+static void test_swarm_sub_is_separate(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16);
+    double alone, with_sides, with_square, oscs;
+    swarm_packet(&p, SWARM_UNISON, 57, 0, 0, 0, 0, 127, 0);
+    alone = swarm_power_at(&p, base >> 1, 0);
+    q = p;
+    q.v[PV_E4] = 127;
+    with_sides = swarm_power_at(&q, base >> 1, 0);
+    q = p;
+    q.v[PV_E2] = 64;
+    with_square = swarm_power_at(&q, base >> 1, 0);
+    printf("sub: sides %.1f dB, square %.1f dB\n", 10.0 * log10(with_sides / alone), 10.0 * log10(with_square / alone));
+    CHECK(with_sides > alone * 0.8 && with_sides < alone * 1.25);
+    CHECK(with_square > alone * 0.8 && with_square < alone * 1.25);
+    oscs = swarm_power_at(&p, base, 0);
+    q = p;
+    q.v[PV_E5] = 0;
+    CHECK(oscs > swarm_power_at(&q, base, 0) * 0.8 && oscs < swarm_power_at(&q, base, 0) * 1.25);
+}
+
+/* harmonic 22 of 2093 Hz is past the sample rate and folds to 1946 Hz, which is not a harmonic. Multiplying the phase step by 22 wraps there too */
+static void test_swarm_band_limit(void)
+{
+    pkt_t p;
+    uint32_t base = note_inc(96 * 16);
+    double fundamental, alias;
+    swarm_packet(&p, SWARM_UNISON, 96, 0, 0, 0, 0, 0, 0);
+    fundamental = swarm_power_at(&p, base, 0);
+    alias = swarm_power_at(&p, base * 22u, 0);
+    printf("swarm alias %.1f dB, ", 10.0 * log10(alias / fundamental));
+    CHECK(fundamental > alias * 100000.0);
+    p.v[PV_E3] = 100;                                   /* 3.3 times the pitch: the 3rd harmonic is the strongest */
+    fundamental = swarm_power_at(&p, base * 3u, 0);
+    alias = swarm_power_at(&p, base * 22u, 0);
+    printf("with sync %.1f dB\n", 10.0 * log10(alias / fundamental));
+    CHECK(fundamental > alias * 100000.0);
+}
+
+/* SHIFT at 2.875 times the pitch: the 3rd harmonic grows and the note stays */
+static void test_swarm_shift(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(45 * 16);
+    swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 0, 0, 0);
+    q = p;
+    q.v[PV_E3] = 80;
+    CHECK(swarm_power_at(&q, base * 3u, 0) > swarm_power_at(&p, base * 3u, 0) * 3.0);
+    CHECK(swarm_power_at(&q, base, 0) > swarm_power_at(&q, base + (base >> 1), 0) * 100.0);
+}
+
+/* lines meet across blocks: the second difference is large only at an edge, a few per cycle */
+enum { SHAPE_STILL, SHAPE_SWEEPS, SHAPE_JUMPS };
+static uint32_t swarm_kinks(const pkt_t *p, int move, int32_t limit)
+{
+    static swarm_voice_t S;
+    uint32_t n = 0, kinks = 0, b = 0;
+    swarm_start(&S, p, 12345u);
+    while (n < SWARM_N) {
+        int32_t out[CTL] = {0};
+        uint32_t s;
+        int32_t timbre = move == SHAPE_SWEEPS ? abs((int32_t)(b % 128u) - 64) : move == SHAPE_JUMPS ? (int32_t)((b / 64u) & 1u) * 63 : 0;
+        swarm_render(&S, p, out, 0, timbre);
+        b++;
+        for (s = 0; s < CTL && n < SWARM_N; s++)
+            swarm_buf[n++] = out[s];
+    }
+    for (n = 2000u; n < SWARM_N; n++) {
+        int32_t bend = swarm_buf[n] - 2 * swarm_buf[n - 1u] + swarm_buf[n - 2u];
+        kinks += abs(bend) > limit;
+    }
+    return kinks;
+}
+
+static void test_swarm_lines_join(void)
+{
+    pkt_t p;
+    uint32_t slow, flat;
+    swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 0, 0, 0);       /* 110 Hz: 16 cycles and 4 samples around each edge */
+    flat = swarm_kinks(&p, SHAPE_STILL, 4);
+    printf("swarm kinks: saw %u, ", flat);
+    CHECK(flat <= 16u * 4u);
+    p.v[PV_E2] = 64;
+    flat = swarm_kinks(&p, SHAPE_STILL, 4);
+    printf("square %u, ", flat);
+    CHECK(flat <= 32u * 4u);
+    swarm_packet(&p, SWARM_UNISON, 45, 40, 0, 0, 127, 0, 90);   /* 7 oscillators */
+    flat = swarm_kinks(&p, SHAPE_STILL, 8);
+    printf("seven %u, ", flat);
+    CHECK(flat <= 7u * 16u * 4u);
+    swarm_packet(&p, SWARM_UNISON, 33, 0, 0, 0, 0, 0, 0);       /* SHAPE moving at every block, 8 cycles at 55 Hz */
+    slow = swarm_kinks(&p, SHAPE_SWEEPS, 40);
+    printf("sweep %u, ", slow);
+    CHECK(slow <= 100u);
+    p.v[PV_E2] = 64;                                            /* square to narrow pulse in one block */
+    slow = swarm_kinks(&p, SHAPE_JUMPS, 300);
+    printf("jump %u\n", slow);
+    CHECK(slow <= 8u * 2u * 4u);
+}
+
+/* an edge between blocks: t is 1/2, so its two samples sit evenly around the middle of the step, one in each block */
+static void test_swarm_edge_across_blocks(void)
+{
+    static swarm_voice_t S;
+    pkt_t p;
+    int32_t o[CTL * 2u] = {0};
+    uint32_t inc = note_inc(45 * 16);
+    swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 0, 0, 0);
+    swarm_start(&S, &p, 1u);
+    S.phase[SWARM_CENTER] = 0u - inc * 31u - inc / 2u;
+    swarm_render(&S, &p, o, 0, 0);
+    swarm_render(&S, &p, o + CTL, 0, 0);
+    CHECK(o[CTL - 1u] > SWARM_PEAK / 3 && o[CTL] < -SWARM_PEAK / 3);
+    CHECK(abs(o[CTL - 1u] + o[CTL]) < SWARM_PEAK / 10);   /* a lone sample at the far side of the step would miss by 1/4 of the peak */
+}
+
+/* what a note is charged counts its edges: 440 Hz is 0.32 edges a block per saw */
+static void test_swarm_charge(void)
+{
+    pkt_t p;
+    uint32_t e;
+    swarm_packet(&p, SWARM_UNISON, 69, 0, 0, 0, 127, 0, 0);
+    e = swarm_edges_q8(&p);
+    CHECK(e > 7u * 2u * 75u && e < 7u * 2u * 88u);
+    p.v[PV_E4] = 0;
+    CHECK(swarm_edges_q8(&p) == e / 7u);
+    swarm_packet(&p, SWARM_UNISON, 69, 0, 0, 64, 127, 0, 0);    /* 2.5 times the pitch, and the master */
+    CHECK(swarm_edges_q8(&p) > e * 27u / 10u && swarm_edges_q8(&p) < e * 33u / 10u);
+    swarm_base_cost = 1000u;
+    swarm_edge_cost = 100u;
+    swarm_packet(&p, SWARM_UNISON, 36, 0, 0, 0, 127, 0, 0);
+    e = voice_charge(&p);
+    p.v[PV_NOTE] = 96;
+    CHECK(e > 1000u && voice_charge(&p) > e * 2u);
+    memset(voices, 0, sizeof voices);
+    voice_budget = voice_charge(&p) * 2u;               /* two high notes fit, and a third steals */
+    voice_trigger(&p, KEY_NONE, 0);
+    voice_trigger(&p, KEY_NONE, 0);
+    CHECK(voices_active() == 2u && !voice_fading(&voices[0]) && !voice_fading(&voices[1]));
+    voice_trigger(&p, KEY_NONE, 0);
+    CHECK(voice_fading(&voices[0]) && !voices[2].active);
+    voice_budget = 0xFFFFFFFFu;
+    swarm_base_cost = swarm_edge_cost = 0u;
+    memset(voices, 0, sizeof voices);
+}
+
+static void test_swarm_drift(void)
+{
+    static swarm_voice_t S;
+    pkt_t p;
+    uint32_t b, i;
+    int32_t moved = 0, worst = 0;
+    swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 127, 0, 127);
+    swarm_start(&S, &p, 7);
+    for (b = 0; b < 8000u; b++) {
+        int32_t out[CTL] = {0};
+        swarm_render(&S, &p, out, 0, 0);
+        for (i = 0; i < SWARM_OSCS; i++) {
+            worst = abs(S.drift[i]) > worst ? abs(S.drift[i]) : worst;
+            moved += S.drift[i] != 0;
+        }
+    }
+    CHECK(moved > 0);
+    CHECK(worst <= (1008 << 8) && worst > (100 << 8));   /* 1008 is 1.54 % */
+    swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 127, 0, 0);
+    swarm_start(&S, &p, 7);
+    for (b = 0; b < 2000u; b++) {
+        int32_t out[CTL] = {0};
+        swarm_render(&S, &p, out, 0, 0);
+    }
+    for (i = 0; i < SWARM_OSCS; i++)
+        CHECK(S.drift[i] == 0);
+}
+
+static void test_swarm_level_bound(void)
+{
+    static const int8_t V[3] = {0, 64, 127};
+    uint32_t a, b, c, n;
+    int32_t worst = 0;
+    for (a = 0; a < 3u; a++)
+        for (b = 0; b < 3u; b++)
+            for (c = 0; c < 3u; c++) {
+                pkt_t p;
+                swarm_packet(&p, (int32_t)(a & 1u), 45, V[a], V[b], V[c], V[a], V[c], V[b]);
+                swarm_samples(&p, swarm_buf, 4096u, 0u, 0);
+                for (n = 0; n < 4096u; n++)
+                    worst = abs(swarm_buf[n]) > worst ? abs(swarm_buf[n]) : worst;
+            }
+    CHECK(worst <= SWARM_PEAK * 4);
+    CHECK(worst >= SWARM_PEAK / 2);
+}
+
+/* a slot reaches each engine's main value */
+static void test_timbre_destination(void)
+{
+    pkt_t p;
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    uint32_t b, i;
+    fm_packet(&p, 0, 45, 2, 3, 3, 0, 0, 0, 0);
+    p.v[PV_MOD_S] = 127;
+    p.v[PV_SLOT_SRC3] = MOD_SRC_VEL;
+    p.v[PV_SLOT_DST3] = MOD_DST_TIMBRE;
+    p.v[PV_SLOT_AMT3] = 127;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 8u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+    }
+    CHECK(voices[0].chain.off[MOD_DST_TIMBRE] >> 8 > 40);
+    CHECK(voices[0].engine.fm.gain_a > 1000);
+    perc_packet(&p, PERC_SKIN, 45, 110, 64, 0, 0, 0, 0, 0);
+    p.v[PV_SLOT_SRC3] = MOD_SRC_VEL;
+    p.v[PV_SLOT_DST3] = MOD_DST_TIMBRE;
+    p.v[PV_SLOT_AMT3] = 127;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 8u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+    }
+    CHECK(voices[0].engine.perc.fm_gain > 1000);
+}
+
+static uint32_t count_active_key(uint32_t key)
+{
+    uint32_t i, n = 0;
+    for (i = 0; i < NVOICE; i++)
+        n += voices[i].active && voices[i].key == key && voices[i].chain.amp_env.stage < ENV_RELEASE;
+    return n;
+}
+
+static void test_hold(void)
+{
+    static pattern_t pat;
+    pkt_t p, other;
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    uint32_t b, i, k;
+    swarm_packet(&p, SWARM_UNISON, 36, 40, 0, 0, 80, 0, 0);
+    p.v[PV_LEN] = (int8_t)LEN_HOLD;
+    other = p;
+    other.v[PV_NOTE] = 48;
+    memset(voices, 0, sizeof voices);
+    voice_trigger_step(&p, 2, 5000u);
+    for (b = 0; b < 3000u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+    }
+    CHECK(count_active_key(KEY_TRACK(2)) == 1u);        /* far past any step count */
+    voice_trigger_step(&p, 2, 5000u);
+    CHECK(voices_active() == 1u);                       /* the same note keeps sounding */
+    voice_trigger_step(&p, 3, 5000u);
+    CHECK(count_active_key(KEY_TRACK(2)) == 1u && count_active_key(KEY_TRACK(3)) == 1u);   /* another track's note leaves it */
+    voice_trigger_step(&other, 2, 5000u);
+    CHECK(count_active_key(KEY_TRACK(2)) == 1u && voices_active() == 3u);    /* a new note: the old one is in release */
+    p.v[PV_LEN] = 1;
+    voice_trigger_step(&p, 2, 5000u);
+    CHECK(count_active_key(KEY_TRACK(2)) == 0u);        /* so does a note of a set length */
+    for (k = 0; k < NTRK; k++)
+        track_init(&pat.track[k], 0);
+    pat.track[3].steps[0].on = 1;
+    for (b = 0; b < HOLD_CHECK_BLOCKS * (NTRK + 1u); b++)
+        voices_hold_service(&pat);
+    CHECK(count_active_key(KEY_TRACK(3)) == 1u);        /* its track has a step on */
+    pat.track[3].steps[0].on = 0;
+    for (b = 0; b < HOLD_CHECK_BLOCKS * (NTRK + 1u); b++)
+        voices_hold_service(&pat);
+    CHECK(count_active_key(KEY_TRACK(3)) == 0u);        /* now nothing else would end it */
+}
+
+/* the peak of the voice's output over 16 blocks, from block at */
+static int32_t voice_peak_at(const pkt_t *p, uint32_t at)
+{
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL], peak = 0;
+    uint32_t b, i;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(p, KEY_NONE, 0);
+    for (b = 0; b < at + 16u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+        for (i = 0; b >= at && i < CTL; i++)
+            peak = abs(l[i]) > peak ? abs(l[i]) : peak;
+    }
+    return peak;
+}
+
+static uint32_t perc_voice_life(int32_t decay, int32_t sustain, int32_t release, uint32_t hold)
+{
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    pkt_t p;
+    uint32_t b = 0, i;
+    perc_packet(&p, PERC_SKIN, 45, decay, 0, 0, 0, 0, 0, 0);
+    p.v[PV_AMP_S] = (int8_t)sustain;
+    p.v[PV_AMP_R] = (int8_t)release;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(&p, KEY_NONE, hold);
+    while (voices_active() && b < 400000u) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+        b++;
+    }
+    return b;
+}
+
+/* rising zero crossings of the voice's output over the given blocks */
+static uint32_t voice_crossings_at(const pkt_t *p, uint32_t at, uint32_t blocks)
+{
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL], last = 0;
+    uint32_t b, i, n = 0;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(p, KEY_NONE, 0);
+    for (b = 0; b < at + blocks; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+        for (i = 0; b >= at && i < CTL; i++) {
+            n += last < 0 && l[i] >= 0;
+            last = l[i];
+        }
+    }
+    return n;
+}
+
+/* SHAPE folds at low values and keeps the level and the decay, on any engine. Without the follower a fold stays at full
+ * scale until the driven signal falls under it */
+static void test_shape_keeps_punch(void)
+{
+    pkt_t dry, folded, fm_dry, fm_folded;
+    uint32_t mid = env_blocks(100) / 4u;
+    int32_t dry_peak, fold_peak;
+    perc_packet(&dry, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 0);
+    folded = dry;
+    folded.v[PV_SHAPER] = 127;
+    dry_peak = voice_peak_at(&dry, mid);
+    fold_peak = voice_peak_at(&folded, mid);
+    CHECK(voice_peak_at(&folded, 60u) > fold_peak * 2);     /* folded output still falls */
+    CHECK(fold_peak < dry_peak * 3 / 2 && fold_peak > dry_peak / 3);
+    CHECK(voice_crossings_at(&folded, 60u, 60u) > voice_crossings_at(&dry, 60u, 60u) * 2u);   /* and folding adds harmonics */
+    mid = env_blocks(100) * 4u / 5u;                        /* near the end they meet again */
+    fold_peak = voice_peak_at(&folded, mid);
+    dry_peak = voice_peak_at(&dry, mid);
+    CHECK(fold_peak < dry_peak * 2 + 20 && fold_peak * 2 + 20 > dry_peak);
+    {
+        chain_t c;
+        int32_t x[CTL];
+        uint32_t i, b;
+        folded = dry;
+        folded.v[PV_SHAPER] = 30;                           /* 1.8 times a full engine signal folds back toward 0 */
+        chain_start(&c, &folded);
+        for (b = 0; b < 2u; b++) {
+            for (i = 0; i < CTL; i++)
+                x[i] = 8000;
+            chain_effects(&c, &folded, x);
+        }
+        CHECK(abs(x[CTL - 1u]) < 4000);
+    }
+    fm_packet(&fm_dry, 7, 45, 2, 2, 2, 0, 0, 0, 0);
+    fm_folded = fm_dry;
+    fm_folded.v[PV_SHAPER] = 127;
+    CHECK(voice_crossings_at(&fm_folded, 60u, 60u) > voice_crossings_at(&fm_dry, 60u, 60u) * 2u);
+    CHECK(voice_peak_at(&fm_folded, 60u) < voice_peak_at(&fm_dry, 60u) * 3 / 2);
+}
+
+/* a Perc voice takes the amp envelope as any engine does */
+static void test_perc_amp_envelope(void)
+{
+    pkt_t p;
+    int32_t fast, slow, early, mid;
+    uint32_t full = env_blocks(100), once = perc_voice_life(100, 0, 127, 8u), held = perc_voice_life(100, 0, 127, 50u);
+    CHECK(once * 10u > full * 7u && once * 10u < full * 13u);       /* SUS 0 and a long REL: a one-shot */
+    CHECK(held * 10u > once * 9u && held * 10u < once * 11u);       /* whatever the note length */
+    CHECK(perc_voice_life(100, 0, 20, 50u) < 50u + env_blocks(20) * 2u + 8u);       /* a short REL gates it */
+    CHECK(perc_voice_life(100, 0, 70, 50u) < perc_voice_life(100, 0, 90, 50u));     /* REL sets the note's end */
+    CHECK(perc_voice_life(40, 64, 40, 5000u) >= 5000u);             /* SUS holds until the note ends */
+    CHECK(perc_voice_life(40, 64, 40, 5000u) < 5000u + env_blocks(40) * 2u + 8u);
+    perc_packet(&p, PERC_SKIN, 45, 100, 0, 0, 0, 0, 0, 0);
+    fast = voice_peak_at(&p, 8u);
+    p.v[PV_AMP_A] = 90;
+    slow = voice_peak_at(&p, 8u);
+    CHECK(slow * 4 < fast);                             /* ATK rises the voice */
+    p.v[PV_AMP_A] = 0;
+    early = voice_peak_at(&p, 8u);
+    mid = voice_peak_at(&p, full / 2u);
+    CHECK(mid * 100 > early && mid * 8 < early);        /* -30 dB at half of DEC: the fall applies once */
+}
+
+/* blocks from trigger until the voice ends, with a note of hold blocks */
+static uint32_t voice_life(int32_t engine, int32_t model, int32_t release, uint32_t hold)
+{
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    pkt_t p;
+    uint32_t b = 0, i;
+    memset(voices, 0, sizeof voices);
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = (int8_t)engine;
+    p.v[PV_E0] = (int8_t)model;
+    p.v[PV_NOTE] = 48;
+    p.v[PV_AMP_S] = 127;
+    p.v[PV_AMP_R] = (int8_t)release;
+    voice_trigger(&p, KEY_NONE, hold);
+    while (voices_active() && b < 200000u) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+        b++;
+    }
+    return b;
+}
+
+/* velocity sets the amp envelope's peak on each engine, apart from level */
+static void test_velocity_scales_peak(void)
+{
+    pkt_t p;
+    int32_t full, half, quiet;
+    fm_packet(&p, 0, 45, 2, 3, 3, 0, 0, 0, 0);
+    p.v[PV_VEL] = 127;
+    full = voice_peak_at(&p, 20u);
+    p.v[PV_VEL] = 64;
+    half = voice_peak_at(&p, 20u);
+    p.v[PV_VEL] = 0;
+    quiet = voice_peak_at(&p, 20u);
+    CHECK(half * 45 > full * 10 && half * 35 < full * 10);
+    CHECK(quiet == 0);
+    p.v[PV_VEL] = 127;
+    p.v[PV_LEVEL] = 64;
+    CHECK(voice_peak_at(&p, 20u) < full / 4);           /* level still attenuates */
+    swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 0, 0, 0);
+    p.v[PV_VEL] = 127;
+    full = voice_peak_at(&p, 20u);
+    p.v[PV_VEL] = 64;
+    half = voice_peak_at(&p, 20u);
+    CHECK(half * 45 > full * 10 && half * 35 < full * 10);
+    perc_packet(&p, PERC_SKIN, 45, 110, 64, 0, 0, 0, 0, 0);
+    p.v[PV_VEL] = 127;
+    full = voice_peak_at(&p, 20u);
+    p.v[PV_VEL] = 64;
+    half = voice_peak_at(&p, 20u);
+    CHECK(half * 45 > full * 10 && half * 35 < full * 10);
+}
+
+/* a note ends by its amp release, on every engine that takes note length */
+static void test_release_sets_note_end(void)
+{
+    static const int8_t ENGINE[][2] = {{ENGINE_FM, 0}, {ENGINE_FM, 3}, {ENGINE_FM, 7}, {ENGINE_PHYS, PM_MODAL}, {ENGINE_PHYS, PM_STRING}};
+    uint32_t e;
+    const uint32_t hold = 100u;
+    for (e = 0; e < NELEM(ENGINE); e++) {
+        uint32_t quick = voice_life(ENGINE[e][0], ENGINE[e][1], 20, hold), slow = voice_life(ENGINE[e][0], ENGINE[e][1], 100, hold);
+        CHECK(quick >= hold && quick < hold + env_blocks(20) * 2u + 8u);
+        CHECK(slow >= hold + env_blocks(100) / 2u && slow < hold + env_blocks(100) * 2u);
+    }
+}
+
+/* the time table means -60 dB for decay and release, and the whole rise for attack */
+static void test_envelope_times(void)
+{
+    static const int8_t V[] = {40, 64, 80, 100, 127};
+    uint32_t i;
+    for (i = 0; i < NELEM(V); i++) {
+        env_t e;
+        uint32_t n = 0, want = env_blocks(V[i]);
+        env_start(&e, 0, V[i], 0, 0);
+        while (e.stage == ENV_ATTACK)
+            env_block(&e);
+        while (e.stage == ENV_DECAY) {
+            env_block(&e);
+            n++;
+        }
+        CHECK(n * 10u > want * 7u && n * 10u < want * 13u);
+        env_start(&e, 0, 0, 127, V[i]);
+        while (e.stage != ENV_SUSTAIN)
+            env_block(&e);
+        env_release(&e);
+        n = 0;
+        while (e.stage != ENV_DONE) {
+            env_block(&e);
+            n++;
+        }
+        CHECK(n * 10u > want * 7u && n * 10u < want * 13u);
+    }
+}
+
+/* with every voice taken, a trigger takes one of lower priority, and never one of higher priority */
+static void test_priority_across_voices(void)
+{
+    pkt_t low, high;
+    uint32_t i, n_low = 0, n_high = 0, dropped;
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    perc_packet(&low, PERC_SKIN, 45, 110, 0, 0, 0, 0, 0, 0);
+    low.v[PV_PRIO] = PRIO_LOW;
+    high = low;
+    high.v[PV_PRIO] = PRIO_HIGH;
+    high.v[PV_NOTE] = 60;
+    memset(voices, 0, sizeof voices);
+    for (i = 0; i < NVOICE; i++)
+        voice_trigger(&low, KEY_NONE, 0);
+    for (i = 0; i < CTL; i++)
+        l[i] = r[i] = d[i] = w[i] = 0;
+    voices_render(l, r, d, w);
+    voice_trigger(&high, KEY_NONE, 0);
+    voices_render(l, r, d, w);
+    voices_render(l, r, d, w);
+    for (i = 0; i < NVOICE; i++) {
+        n_low += voices[i].active && voices[i].pkt.v[PV_PRIO] == PRIO_LOW;
+        n_high += voices[i].active && voices[i].pkt.v[PV_PRIO] == PRIO_HIGH;
+    }
+    CHECK(n_high == 1u && n_low == NVOICE - 1u);
+    memset(voices, 0, sizeof voices);
+    for (i = 0; i < NVOICE; i++)
+        voice_trigger(&high, KEY_NONE, 0);
+    voices_render(l, r, d, w);
+    dropped = voices_dropped;
+    voice_trigger(&low, KEY_NONE, 0);
+    CHECK(voices_dropped == dropped + 1u);
 }
 
 static void test_steal_order(void)
@@ -1273,7 +2141,6 @@ int main(void)
     test_effects();
     test_env_curve();
     test_meter_bar();
-    test_fm_chart();
     test_lfo_rate_doubles();
     test_lfo_shapes();
     test_lfo_rises_from_start();
@@ -1294,11 +2161,39 @@ int main(void)
     test_perc_decay_ends_the_voice();
     test_perc_harm_shortens_upper_partials();
     test_perc_level_bound();
-    test_perc_fold_keeps_punch();
-    test_perc_fold_function();
-    test_perc_metal_and_noise();
-    test_perc_attack();
+    test_wavefold();
+    test_perc_noise_seed();
+    test_perc_click();
+    test_perc_modes_set_the_partials();
+    test_perc_fm();
+    test_perc_noise_fall();
+    test_perc_noise_ignores_sustain();
+    test_fm_routes_run_forward();
+    test_fm_loops_match_routes();
+    test_fm_sound();
+    test_fm_mod_envelope();
+    test_fm_level_bound();
+    test_fm_removes_offset();
+    test_shape_keeps_punch();
+    test_swarm_pitch_and_shape();
+    test_swarm_shape_keeps_loudness();
+    test_swarm_spread_mode_mix_sub();
+    test_swarm_sub_is_separate();
+    test_swarm_band_limit();
+    test_swarm_shift();
+    test_swarm_lines_join();
+    test_swarm_edge_across_blocks();
+    test_swarm_charge();
+    test_swarm_drift();
+    test_swarm_level_bound();
+    test_timbre_destination();
+    test_hold();
+    test_perc_amp_envelope();
+    test_velocity_scales_peak();
+    test_release_sets_note_end();
+    test_envelope_times();
     test_steal_order();
+    test_priority_across_voices();
     test_master_bound();
     printf("sizeof(pattern_t) %zu, 27 patterns %zu KB, pool %zu B\n", sizeof(pattern_t),
            NPATTERN * sizeof(pattern_t) / 1024, sizeof pool);
