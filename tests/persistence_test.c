@@ -140,143 +140,6 @@ static void reset(void)
     motion_lost = 0;
 }
 
-/* ---- 1.0.3: the retired FM6 bank's patches move into the user presets on the first boot (up_fm6.c) ---- */
-static uint8_t mig_pre[0x100000];
-static fm6_bank_t mig_bank;
-
-static void mig_rec(up_bank_t *b, uint32_t i, uint32_t engine, int16_t slot, char tag)
-{
-    up_rec_t *r = &b->r[i];
-    uint32_t k;
-    memset(r, 0, sizeof *r);
-    r->used = UP_USED; r->ver = UP_VER; r->engine = (uint8_t)engine; r->np = P_COUNT;
-    r->name[0] = tag;
-    for (k = 0; k < P_COUNT; k++) up_set_value(r, k, param_desc_of(engine, k)->def);
-    up_set_value(r, P_E7, slot);
-    up_set_value(r, P_E0, (int16_t)(tag & 7));          /* (each record another sound) */
-}
-
-/* a 1.0.2 flash: user presets on B3 (slot 1), F2 (2), B5 empty (3), DRUM (4), B1 (18); the bank written twice */
-static void mig_setup(void)
-{
-    static up_bank_t b[2];
-    memset(nor, 0xFF, sizeof nor);
-    memset(b, 0, sizeof b);
-    for (uint32_t i = 0; i < 2u; i++) { b[i].magic = UP_BANK_MAGIC; b[i].rsize = sizeof(up_rec_t); b[i].nslot = UP_PER_BANK; }
-    mig_rec(&b[0], 0, ENGI_FM6, FM6_NFACTORY + 2, 'A');
-    mig_rec(&b[0], 1, ENGI_FM6, 1, 'B');
-    mig_rec(&b[0], 2, ENGI_FM6, FM6_NFACTORY + 4, 'C');
-    mig_rec(&b[0], 3, ENGI_DRUM, FM6_NFACTORY + 2, 'D');
-    mig_rec(&b[1], 1, ENGI_FM6, FM6_NFACTORY + 0, 'E');
-    st_save(OBJ_UPRESET0, &b[0], sizeof b[0]);
-    st_save(OBJ_UPRESET0 + 1, &b[1], sizeof b[1]);
-    memset(&mig_bank, 0, sizeof mig_bank);
-    mig_bank.magic = FM6_BANK_MAGIC; mig_bank.ver = 1; mig_bank.nslot = FM6_BANK_N; mig_bank.used = 1u | 1u << 2;
-    memcpy(mig_bank.v[2], FM6_FACTORY[4], FM6_PACKED); memcpy(mig_bank.v[2] + 118, "OLD BANK 1", 10);
-    st_save(OBJ_FM6BANK, &mig_bank, sizeof mig_bank);   /* A: an older bank */
-    memcpy(mig_bank.v[0], FM6_FACTORY[6], FM6_PACKED); memcpy(mig_bank.v[0] + 118, "NEW B1    ", 10);
-    memcpy(mig_bank.v[2] + 118, "NEW B3    ", 10);
-    st_save(OBJ_FM6BANK, &mig_bank, sizeof mig_bank);   /* B: the newest */
-}
-
-static void mig_boot(void)                               /* a power-on: RAM lost, the stores from flash */
-{
-    memset(up_bank, 0, sizeof up_bank);
-    memset(&upf, 0, sizeof upf);
-    up_boot();
-}
-
-/* the presets play what 1.0.2 played: slot 1 the newest B3, 18 B1, 2 F2, 3 init (an empty B5), DRUM none */
-static int mig_ok(void)
-{
-    uint8_t pk[FM6_PACKED];
-    return !upf_get(0, pk) && !memcmp(pk + 118, "NEW B3    ", 10) && !upf_get(17, pk) &&
-           !memcmp(pk + 118, "NEW B1    ", 10) && upf_get(1, pk) && upf_get(2, pk) && upf_get(3, pk);
-}
-
-static int mig_test(void)
-{
-#if !FELUCCA_LEGACY
-    int bad = 0;
-    uint32_t before;
-    uint8_t pk[FM6_PACKED];
-    reset();
-    mig_setup();
-    before = erases;
-    mig_boot();
-    bad += check("(2.0) 1.0's FM6 bank at boot: not read (the converter moves an archive's), nothing written",
-                 upf_valid(&upf) && upf_get(0, pk) && erases == before);
-    return bad;
-#else
-    int bad = 0, ok = 1;
-    uint32_t cut, before, cuts = 0;
-    uint8_t pk[FM6_PACKED];
-    upf_t got;
-    reset();
-    mig_setup();
-    memcpy(mig_pre, nor, sizeof nor);
-    mig_boot();
-    bad += check("FM6 bank -> user presets: B slots get the bank's newest patches", mig_ok());
-    bad += check("  .. written into A (the bank's older copy); the bank's newest copy (B) still whole",
-                 st_load(OBJ_UPFM6, &got, sizeof got) == (int)sizeof got && !memcmp(&got, &upf, sizeof got) &&
-                     ((st_hdr_t *)(nor + T_FM6_A))->type == OBJ_UPFM6 && st_load(OBJ_FM6BANK, &mig_bank, sizeof mig_bank) > 0 &&
-                     !memcmp(mig_bank.v[0] + 118, "NEW B1", 6));
-    up_load(0);
-    bad += check("  .. UP_LOAD 1 plays the bank's B3, SLOT OWN", !memcmp(fm6_patch[song.sel] + FP_NAME, "NEW B3    ", 10) &&
-                 TSEL->p[P_E7] == FM6_OWN);
-    up_load(1);
-    bad += check("  .. UP_LOAD 2 (F2) plays F2, SLOT F2", !memcmp(fm6_patch[song.sel] + FP_NAME, FM6_FACTORY[1] + 118, 10) &&
-                 TSEL->p[P_E7] == 1);
-    up_load(2);
-    bad += check("  .. UP_LOAD 3 (an empty B5) plays the init voice, as before",
-                 !memcmp(fm6_patch[song.sel] + FP_NAME, "INIT VOICE", 10) && TSEL->p[P_E7] == FM6_OWN);
-    before = erases;
-    mig_boot();
-    bad += check("  .. the next boot: done (no write), the same patches", mig_ok() && erases == before);
-    /* a power cut at every write step of the migration: the next boot ends with the same result */
-    for (cut = 0; cut < 64u && ok; cut++) {
-        memcpy(nor, mig_pre, sizeof nor);
-        fail_after = (int)cut;
-        mig_boot();                                      /* (writes stop at the cut: the rest fails) */
-        if (fail_after > 0) break;                       /* (this boot finished before the cut) */
-        fail_after = -1;
-        cuts++;
-        mig_boot();
-        ok &= mig_ok() && st_load(OBJ_UPFM6, &got, sizeof got) == (int)sizeof got;
-    }
-    memcpy(nor, mig_pre, sizeof nor);
-    erase_error = 1;
-    mig_boot();                                          /* a cut before the erase */
-    erase_error = 0;
-    mig_boot();
-    ok &= mig_ok();
-    bad += check("a power cut at any step of the migration loses nothing (the next boot redoes it)", ok && cuts >= 10u);
-    /* after it: a preset save writes the other sector (the bank's last copy); a cut there keeps the first copy */
-    memcpy(nor, mig_pre, sizeof nor);
-    fail_after = -1;
-    mig_boot();
-    trk[song.sel].eng_req = ENGI_FM6;
-    fm6_load_slot(song.sel, 3);
-    trk[song.sel].p[P_E7] = 3;                           /* (SLOT F4, as a load sets it: (FM6 LAB) a factory patch keeps
-                                                          * its name when a sound is saved) */
-    fail_after = (int)((sizeof(up_bank_t) + 255u) / 256u + 1u + 3u);   /* the preset bank's write passes, the patches' fails */
-    up_store(20, "CUT");
-    fail_after = -1;
-    mig_boot();
-    bad += check("a cut while a preset's patch is written: the others kept, that preset without one",
-                 mig_ok() && upf_get(20, pk));
-    up_store(20, "SAVED");
-    mig_boot();
-    bad += check("saved again: its patch, and the bank's sectors now both hold the patches object",
-                 mig_ok() && !upf_get(20, pk) && !memcmp(pk + 118, FM6_FACTORY[3] + 118, 10) &&
-                     ((st_hdr_t *)(nor + T_FM6_A))->type == OBJ_UPFM6 && ((st_hdr_t *)(nor + T_FM6_B))->type == OBJ_UPFM6);
-    memset(nor, 0xFF, sizeof nor);                        /* a device that never had a bank: nothing written */
-    before = erases;
-    mig_boot();
-    bad += check("no bank: nothing to move, nothing written", erases == before && upf_valid(&upf));
-    return bad;
-#endif
-}
 
 /* ---- 1.2, Discussion #130: the autosave (project.c): written only when the music changed, stopped and idle 2 s, at
  * most one every 20 s ((2.0) 1.2: 10 s, a minute); restored at power-on (RESTORE LAST ON, a clean boot); a damaged one
@@ -450,19 +313,13 @@ static int autosave_test(void)
         as_power_on();
         song.g[G_BPM] = 123;
         project_capture(&pj);
-        ok = proj_pack2(&w, &pj, &PROJ_SKF2) && !st_save(OBJ_AUTOSAVE, &w, PROJ_STORE2);
+        memset(&w, 0, sizeof w);
+        w.align = 0x534B4632u;                      /* "SKF2" */
+        ok = !st_save(OBJ_AUTOSAVE, &w, 1280u);
         as_power_on();
         song.g[G_BPM] = 120;
         trk[k].eng_req = ENGI_FM6;
-#if !FELUCCA_LEGACY
         bad += check("(2.0) autosave: an SKF2 one (before 2.0): ignored", ok && autosave_boot(1) == 0 && song.g[G_BPM] == 120);
-#else
-        ok &= autosave_boot(1) == 1 && song.g[G_BPM] == 123 && trk[k].eng_req == trk_def_engine(k);
-        as_edit(9);
-        as_run(11000u);
-        ok &= st_load(OBJ_AUTOSAVE, &w, sizeof w) == (int)PROJ_SKF->size && *(const uint32_t *)w.raw == PROJ_SKF->magic;
-        bad += check("autosave: an SKF2 one restored (the last track as at power-on); written again as SKF2 / SKF3", ok);
-#endif
     }
     /* a power cut in the middle of a write: the copy before stays in charge */
     memset(nor + T_AS, 0xFF, 0x2000u);
@@ -649,9 +506,6 @@ static int other_fw_test(void)
             ui_set_rev = 1;
             settings_save();
         }
-#if FELUCCA_LEGACY
-        proj_migrate(1);
-#endif
         unit_g_adopt = ui_set_rev < 2u;
         autosave_boot(1);
         unit_g_boot();
@@ -681,9 +535,6 @@ int main(void)
     uint32_t before;
     sks_t p;
     project_store_t old, got;
-#if FELUCCA_LEGACY
-    project_v5_t v5;
-#endif
     up_bank_t bank;
     up_rec_t r;
     reset();
@@ -912,19 +763,11 @@ int main(void)
     {   /* FUN7 itself refuses a step outside its fields: a damaged slot is empty, the tracks stay ((2.0) SKF4 a REPS) */
         step_t keep = trk[0].step[0];
         old = proj_slot[0];
-#if FELUCCA_LEGACY
-        project_capture(&proj_scratch);                           /* (an SKF1 slot: the format before phase 5's) */
-        proj_pack(&proj_slot[0], &proj_scratch);
-        proj_slot[0].raw[68 + PROJ_NP + 2 + 4] = 7;               /* track 1 step 1: n = 7 */
-        bad += check("damaged FUN7 slot (hash ok, n > 4) is refused", (memcpy(proj_slot[0].raw + PROJ_STORE_SIZE - 4,
-                      &(uint32_t){proj_hash(proj_slot[0].raw, PROJ_STORE_SIZE - 4)}, 4), !project_used(0)));
-#else
         project_capture(&proj_scratch);
         proj_pack2(&proj_slot[0], &proj_scratch, PROJ_SKF);
         proj_slot[0].raw[PROJ_ENT4 + 1u] = 40;                    /* track 1 entry A: REPS 41 */
         bad += check("(2.0) damaged SKF4 slot (hash ok, REPS past 16) is refused", (memcpy(proj_slot[0].raw + PROJ_STORE4 - 4,
                       &(uint32_t){proj_hash(proj_slot[0].raw, PROJ_STORE4 - 4)}, 4), !project_used(0)));
-#endif
         st_save(OBJ_PROJECT0, &proj_slot[0], sizeof proj_slot[0]);
         ui.msg[0] = 0;
         project_load(0);
@@ -933,9 +776,8 @@ int main(void)
         proj_slot[0] = old;
         st_save(OBJ_PROJECT0, &proj_slot[0], sizeof proj_slot[0]);
     }
-    {   /* an older format (FUN5) with values FUN7 cannot pack still loads, bounded ((2.0) the converter's; 2.0: OLD FORMAT) */
+    {   /* an older format (FUN5): an empty slot */
         uint32_t i;
-#if !FELUCCA_LEGACY
         static uint8_t v5[3352];                                   /* (FUN5's size) */
         step_t keep = trk[0].step[0];
         memset(v5, 0, sizeof v5);
@@ -946,29 +788,8 @@ int main(void)
         memset(proj_slot[3].raw, 0, 4);
         ui.msg[0] = 0;
         project_load(3);
-        bad += check("(2.0) a FUN5 slot: OLD FORMAT (used, so SAVE asks), not loaded, the tracks as they were",
-                     !strcmp(ui.msg, "OLD FORMAT") && project_used(3) && !memcmp(&trk[0].step[0], &keep, sizeof keep));
-#else
-        memset(&v5, 0, sizeof v5);
-        v5.magic = PROJ_MAGIC_V5;
-        v5.size = sizeof v5;
-        for (i = 0; i < G_COUNT; i++)
-            v5.g[i] = GP[i].def;
-        for (i = 0; i < PROJ_NT; i++) {
-            v5.t[i].engine = trk[i].engine;
-            memcpy(v5.t[i].p, trk[i].p, sizeof v5.t[i].p);
-        }
-        v5.t[0].p[P_LEVEL] = 900;                                  /* out of range */
-        v5.t[0].step[0] = (step10_t){{255, 128, 160, 200}, 255, 255, 0, 96, 255, 5};
-        v5.sum = proj_hash(&v5, sizeof v5 - 4u);
-        st_save(OBJ_PROJECT0 + 3u, &v5, sizeof v5);
-        memset(proj_slot[3].raw, 0, 4);
-        project_load(3);
-        bad += check("FUN5 load bounds steps and masks lane accents", trk[0].step[0].n == 4u &&
-                      trk[0].step[0].time == ST_REST && trk[0].step[0].note[0] == 127u &&
-                      !trk[0].step[0].note[1] && trk[0].step[0].acc == 5u && project_used(3));
-        bad += check("FUN5 load clamps a parameter into its range", trk[0].p[P_LEVEL] == TP[P_LEVEL].max);
-#endif
+        bad += check("a FUN5 slot: empty, not loaded, the tracks as they were",
+                     !strcmp(ui.msg, "EMPTY SLOT") && !project_used(3) && !memcmp(&trk[0].step[0], &keep, sizeof keep));
         for (i = 0; i < P_COUNT; i++) {
             uint32_t e;
             for (e = 0; e < NENGINES; e++)
@@ -1031,7 +852,6 @@ int main(void)
     settings_save();
     bad += check("PLAY consumed before the settings snapshot defers the write",
                   irq_races == 3u && song.playing && !transport_req && persist_pending && erases == before);
-    bad += mig_test();
     bad += autosave_test();
     bad += autosave_save_test();
     bad += other_fw_test();

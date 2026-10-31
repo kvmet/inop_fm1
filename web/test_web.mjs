@@ -376,17 +376,8 @@ async function editorSamplePresets() {
   const names = E.parse[C.NAMES](await rq(E.req.names(4)));
   await rq(E.req.preset(4, 0));
   const set = E.parse[C.DESC](await rq(E.req.desc(0, info.pe0)));
-  ok(eq(names.names.slice(0, 6), ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", "LOFI PIANO"]) && names.names.length === 10 &&
-    eq(set.names.slice(0, 4), ["PIANO", "PIANO", "FLUTE", "SAX"]) && set.names[4] === "PIANO" &&
-    eq(set.names.slice(5), ["USR1", "USR2", "USR3"]),
-    "SAMPLE: TRANH and PERC removed, SET 1 and 4 kept as PIANO aliases, indices unchanged; (phase 9) the variations after");
-  ok(E.aliasOf(names.names, 1) === 0 && E.aliasOf(names.names, 2) === 2 && E.aliasOf(set.names, 5) === 5 &&
-     E.aliasOf(set.names, 4) === 0, "SAMPLE: an entry named like an earlier one is an alias of it");
-  const alias = E.parse[C.PRESET](await rq(E.req.preset(4, 1)));
-  const setAlias = E.parse[C.SET](await rq(E.req.set(0, info.pe0, 1)));
-  const setPerc = E.parse[C.SET](await rq(E.req.set(0, info.pe0, 4)));
-  ok(alias.preset === 0 && setAlias.value === 0 && setPerc.value === 0,
-    "SAMPLE: preset 1 and SET 1 / 4 (once TRANH, PERC) land on PIANO");
+  ok(eq(names.names, ["NONE"]) && eq(set.names, ["NONE", "USR1", "USR2", "USR3"]),
+    "SAMPLE: no factory sets, NONE and the user slots");
   await rq(E.req.preset(10, 0));
   const kitD = E.parse[C.DESC](await rq(E.req.desc(0, info.pe0)));
   const kitSet = [];
@@ -499,8 +490,8 @@ function mockTables() {
 }
 
 /* ------------------------------------------------------------------ DIGITAL retired --- */
-/* DIGITAL (engine 1, four-operator FM) was replaced by FM6 (src/fm4_convert.c): the editor's conversion == the
-   firmware's (build/host/desc.json "FM4": its presets and 48 sounds), engine 1 is "-" with no presets, G_ENGSEL 1 and
+/* DIGITAL (engine 1, four-operator FM) was replaced by FM6: the editor's presets == the firmware's
+   (build/host/desc.json "FM4"), engine 1 is "-" with no presets, G_ENGSEL 1 and
    PRESET 1 k load the converted sound (FM6, its own patch), library files of DIGITAL sounds (91, 89 and 69 parameters,
    single-patch files too) import as FM6 with the converted patch, a converted sound put to the device keeps its
    DIGITAL values in an engine 1 slot (UP_LOAD converts it), the device's DIGITAL slot reads back as FM6 */
@@ -508,14 +499,6 @@ async function editorFm4() {
   const dj = DESC;
   if (existsSync(dj)) {
     const all = JSON.parse(readFileSync(dj, "utf8")), fw = all.FM4, fpe0 = all.P_E0;
-    let bad = 0;
-    for (const c of fw.cases) {
-      const r = E.FM4.convert(c.p, fpe0);
-      if (r.preset !== c.preset || !eq(r.p, c.out) || !eq(Array.from(r.voice), c.voice)) {
-        if (bad++ < 3) console.log("  FM4: E", js(c.p.slice(fpe0)), "voice", js(Array.from(r.voice).map((x, i) => (x !== c.voice[i] ? `${i}:${x}/${c.voice[i]}` : "")).filter(Boolean)));
-      }
-    }
-    ok(fw.cases.length === 48 && !bad, `DIGITAL -> FM6: the editor's conversion == the firmware's (${fw.cases.length} sounds, ${bad} differ)`);
     ok(eq(E.FM4.TO_FM6, fw.to_fm6) && fw.presets.length === E.FM4.PRESETS.length && fw.presets.every((p, k) => {
       const q = E.FM4.PRESETS[k];
       return q.name === p.name && eq(q.e, p.e) && eq(q.env, p.env) && q.fenv === p.fenv && q.mono === p.mono &&
@@ -1298,8 +1281,8 @@ async function editorTracks() {
   const info = E.parse[C.INFO](await rq(E.req.info()));
   const tr = E.parse[C.TRACK](await rq(E.req.track()));
   ok(info.ntrk === 6 && tr.sel === 0 && tr.ntrk === 6 && tr.tracks[0].engine === 0 && tr.tracks[1].engine === 12
-    && tr.tracks[3].engine === 10 && tr.tracks[3].preset === 0 && tr.tracks[4].engine === 4 && tr.tracks[4].preset === 0
-    && tr.tracks[5].engine === 10, "tracks: INFO NTRK, TRACK lists 6 parts (track 4: DRUM KIT; 5 PIANO, 6 DRUM KIT)");
+    && tr.tracks[3].engine === 10 && tr.tracks[3].preset === 0 && tr.tracks[4].engine === 14 && tr.tracks[4].preset === 0
+    && tr.tracks[5].engine === 10, "tracks: INFO NTRK, TRACK lists 6 parts (track 4: DRUM KIT; 5 OWN KIT, 6 DRUM KIT)");
   {   /* (Skiff phase 6) INFO 54: the light tracks and the engines they may not play; MOTION's track bound is INFO's */
     const heavy = 1 << info.engines.indexOf("GRAIN") | 1 << info.engines.indexOf("PHYS");
     let threw = false;

@@ -444,6 +444,10 @@ static void con_padtest(void)
 }
 #endif
 
+#if FELUCCA_FLPROBE
+#include "flprobe.c"
+#endif
+
 static void con_exec(const char *p)
 {
     if (con_word(&p, "help") || con_word(&p, "?"))
@@ -468,6 +472,10 @@ static void con_exec(const char *p)
 #endif
     else if (con_word(&p, "memr"))
         con_memr(p);
+#if FELUCCA_FLPROBE
+    else if (con_word(&p, "flp"))
+        con_flp(p);
+#endif
 #if FELUCCA_FLASH
     else if (con_word(&p, "flr"))
         con_flr(p);

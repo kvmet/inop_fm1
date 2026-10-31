@@ -69,16 +69,8 @@ int main(void)
          * ((2.0) The converter's build alone: 2.0 keeps the stars as they are, preset 4 a hidden PIANO) */
         persist_t q = original;
         q.favorites.factory[ENGI_SAMPLE][0] = 1u << SMP_SET_PERC | 1u << 2;
-#if FELUCCA_LEGACY
-        assert(settings_import(&q, sizeof q) == 1 && favorites.factory[ENGI_SAMPLE][0] == 1u << 2 &&
-               favorites.factory[ENGI_DRUM][0] == 1u);
-        memset(&s, 0, sizeof s); settings_export(&s);
-        assert(settings_import(&s, sizeof s) == 1 && favorites.factory[ENGI_SAMPLE][0] == 1u << 2 &&
-               favorites.factory[ENGI_DRUM][0] == 1u);
-#else
         assert(settings_import(&q, sizeof q) == 1 && favorites.factory[ENGI_SAMPLE][0] == (1u << SMP_SET_PERC | 1u << 2) &&
                !favorites.factory[ENGI_DRUM][0]);
-#endif
         p = original; assert(settings_import(&p, sizeof p) == 1);
     }
 #endif
@@ -88,19 +80,6 @@ int main(void)
     assert(s.magic == SKS_MAGIC && !s.lowcut && s.bold == 1 && s.fav_user == (1u << 31));   /* bold: kept as saved */
     assert(s.fav[8][0] == 1 && s.fav_filter == 1);
     assert(s.panel.enc[0] == 3); /* saving one feature preserves the other */
-#if FELUCCA_LEGACY                                      /* ((2.0) PER1..PER3, Felucca's before 1.0: the converter's) */
-    p = original; p.magic = 0x50455233u;
-    assert(settings_import(&p, sizeof p - sizeof p.favorites) == 2);
-    assert(p.bold == 1 && !p.favorites.user && !p.favorites.filter);
-    s.bold = p.bold; settings_export(&s); assert(s.bold == 1); /* favorites-only preserves PER3 font */
-    p = original; p.magic = 0x50455232u;
-    assert(settings_import(&p, sizeof p - sizeof p.favorites - sizeof p.bold) == 2);
-    assert(!p.bold && !p.favorites.user && settings.zoom && panel.enc[0] == 3);
-    p = original; p.magic = 0x50455231u;
-    memcpy((uint8_t *)&p + 8, &PANEL_DEFAULT, sizeof(panel_t));
-    assert(settings_import(&p, 8 + sizeof(panel_t)) == 2);
-    assert(!p.bold && !p.zoom && !p.lowcut && !p.favorites.user && panel.magic == PANEL_MAGIC);
-#else
     p = original; p.magic = 0x50455233u;                 /* (2.0: refused, the defaults stay) */
     assert(!settings_import(&p, sizeof p - sizeof p.favorites));
     p = original; p.magic = 0x50455232u;
@@ -108,7 +87,6 @@ int main(void)
     p = original; p.magic = 0x50455231u;
     memcpy((uint8_t *)&p + 8, &PANEL_DEFAULT, sizeof(panel_t));
     assert(!settings_import(&p, 8 + sizeof(panel_t)));
-#endif
     {   /* HOLD: in the retired bold field; older records (bold 0 / 1) are 0.4 s, and stay as saved */
         p = original; p.bold = 0;
         assert(settings_import(&p, sizeof p) == 1 && settings_hold == HOLD_DEF && HOLD_MS[settings_hold] == 400u);
@@ -124,12 +102,6 @@ int main(void)
         settings_export(&s);
         assert(s.bold == 0u && settings_import(&s, sizeof s) == 1 && settings_hold == HOLD_DEF);
         assert(!hold_stored_ok(2u) && !hold_stored_ok(HOLD_TAG + 4u) && hold_stored_ok(HOLD_TAG | 2u));
-#if FELUCCA_LEGACY
-        p = original; p.magic = 0x50455231u;
-        memcpy((uint8_t *)&p + 8, &PANEL_DEFAULT, sizeof(panel_t));
-        settings_hold = 2;
-        assert(settings_import(&p, 8 + sizeof(panel_t)) == 2 && settings_hold == HOLD_DEF);
-#endif
     }
     {   /* LEDS: in the retired zoom field; older records (zoom 0 / 1) are DIM, and stay as saved; idempotent */
         p = original;                                   /* zoom 1: an older record's large readout */
@@ -167,22 +139,12 @@ int main(void)
             settings_export(&s);
             assert(s.zoom == 0u);
         }
-#if FELUCCA_LEGACY
-        p = original; p.magic = 0x50455231u;           /* PER1: no zoom field, DIM */
-        memcpy((uint8_t *)&p + 8, &PANEL_DEFAULT, sizeof(panel_t));
-        settings_leds = LEDS_INV;
-        assert(settings_import(&p, 8 + sizeof(panel_t)) == 2 && settings_leds == LEDS_DIM);
-#endif
     }
 #ifdef FELUCCA_FAVORITES
     {   /* 1.1 CLICK / CLICK LEVEL / COUNT-IN (ui.c ui_rec_prefs, favorites.factory[15][28]): 0 in every older record
          * (the defaults: OFF / MID / OFF); each field 0..2 kept, 3 (no value) back to 0, bits 6-7 kept; twice the same */
         persist_t q;
         uint32_t b;
-#if FELUCCA_LEGACY
-        p = original; p.magic = 0x50455233u;            /* PER3 (no favorites): 0 */
-        assert(settings_import(&p, sizeof p - sizeof p.favorites) == 2 && favorites.factory[15][28] == 0u);
-#endif
         for (b = 0; b < 256u; b++) {
             uint32_t f, want = b;
             for (f = 0; f < 3u; f++)
@@ -199,10 +161,6 @@ int main(void)
     }
     {   /* 1.2 RESTORE LAST (ui.c PREF_RESTORE_OFF, bit 7 of MENU's flags, favorites.factory[15][30]): clear in every
          * older record = ON; set = OFF, kept as saved with the other flags */
-#if FELUCCA_LEGACY
-        p = original; p.magic = 0x50455233u;
-        assert(settings_import(&p, sizeof p - sizeof p.favorites) == 2 && !(favorites.factory[15][30] & 128u));
-#endif
         p = original; p.favorites.factory[15][30] = 128u | 64u | 1u;
         assert(settings_import(&p, sizeof p) == 1 && favorites.factory[15][30] == (128u | 64u | 1u));
         memset(&s, 0, sizeof s); settings_export(&s); assert(s.s.prefs == (128u | 64u | 1u));

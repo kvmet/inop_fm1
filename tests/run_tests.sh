@@ -40,7 +40,7 @@
 #                   the fixed shapes and voicings (at most 4 notes), names, MONO plays the root, a release ends
 #                   exactly what its key / MIDI note started, recording, the ARP, MIDI IN, kits ignore CHRD.
 # RATCH (tests/ratchet_test.c): a step's ratchet (x1..x4): its parts in the sequencer (equal, gated, chords and drum
-#                   hits whole, one chance roll, swing, no slide or tie out, STOP), FUN8 round trip and older projects x1,
+#                   hits whole, one chance roll, swing, no slide or tie out, STOP),
 #                   user preset patterns, SEQ > CHANCE KNOB 3 and the roll / grid drawing.
 # TIES (tests/ties_test.c): (2.0, #25) per-note ties: a note going on while another starts (one note-on each, the
 #                   held one ending where a TIE chain's would), a miss, a tie never starting a note, MONO, RATCH, STOP;
@@ -98,12 +98,7 @@
 # NOISE (tests/noise_test.c): the engine (src/eng_noise.c): COLR's slope (white, pink, brown), the filter and the
 #                   register clock following the key, META periodic at the key, no DC, no clipping at the
 #                   corners, a note from silence the same twice, the cost per voice; demos in build/noise_demo/.
-# DIGITAL -> FM6 (tests/fm4_test.c, built with FELUCCA_FM4=1): the retired four-operator engine against its conversion
-#                   (src/fm4_convert.c): routes and carriers per algorithm, the presets' PTCH, and the sound (pitch,
-#                   centroid, RMS envelope) of its presets and algorithms; demos in build/fm4_demo/. tests/digital_test.c
-#                   (FELUCCA_FM4=1 too): DIGITAL's operator envelopes. Default builds have no DIGITAL (engine 1 reserved).
-#                   tests/fm4_div0_test.c (UBSan, #61): the conversion without a divide that can be 0 gives the values the
-#                   guarded form gave (every INDEX x FLT ENV, random sounds); a 0.9 project with DIGITAL ORGAN converts.
+# DIGITAL (tests/digital_test.c, FELUCCA_FM4=1): the retired engine's operator envelopes. Default builds have no DIGITAL (engine 1 reserved).
 # FM6 (tests/fm6_test.c): the 6-operator FM engine (src/eng_fm6.c, src/fm6_core.c): the 32 algorithms' carriers, the
 #                   operator envelopes (stages, rates, the voice ending), bit-stable notes, a click-free retrigger, no DC /
 #                   clipping over the factory patches, the macros' directions, PTCH, pack / unpack and the SysEx
@@ -111,15 +106,6 @@
 # ROBUST (tests/robust_test.c): damaged or crafted stored data and editor requests: a SLICE scan bounded by the slot,
 #                   a slot that fails its check leaves no zone, engine numbers past the last refused, a retained older
 #                   RAM project bounded, user preset patterns inside their fields, malformed requests never stop PLAY.
-# CONV (tests/conv_test.c, 2.0): the converter (web/conv/conv.c) on archives of before: a 1.x archive needs nothing;
-#                   FUN9 / SKF1 / SKF2 projects become SKF4 with their steps as patterns, presets of versions 1-3 and
-#                   DIGITAL sounds version 6 (an FM6 sound's patch kept), and a fresh unit restoring the result plays
-#                   the same notes and sounds. Felucca 1.2+ (web/conv/felucca.c): FUNA projects as its project.c writes
-#                   them, their sounds by parameter name, NUDGE, automation and song; its user presets by name.
-# LEGACY (2.0, Tier B 10): the formats of before are read by the converter alone (FELUCCA_LEGACY, core.h). The tests
-#                   of them (project_test, motion_test, ratchet_test, fm4_*, conv_test) build so; upreset, settings, UI,
-#                   persistence, bank, backup and robust run twice: as 2.0 is (OLD FORMAT where a record of before is
-#                   met) and as the converter's build (*_legacy: the migrations of 1.x), the fuzzer under ASan both ways.
 # Sanitizers (ASan + UBSan, when the compiler has them; SANITIZE=0 skips): the stored-data and protocol tests again
 #                   (loader, M-UPGRADE entry, editor, projects, backup, ROBUST) and three short fuzz runs with fixed
 #                   seeds: tests/fuzz_ed.c (editor SysEx and raw USB-MIDI packets), tests/fuzz_proj.c (mutated project
@@ -142,10 +128,7 @@ $CC -o "$OUT/storage_test" tests/storage_test.c
 run "flash storage (A/B, torn writes)" "$OUT/storage_test"
 
 $CC -o "$OUT/upreset_test" tests/upreset_test.c
-run "user presets (UP_PUT parser, bank round trip, versions 4..6, grid records; (2.0) DIGITAL and versions 1..3 OLD FORMAT)" "$OUT/upreset_test"
-LEGACY="-DFELUCCA_LEGACY=1"                     # ((2.0, Tier B 10) the converter's build: the formats of before, core.h)
-$CC $LEGACY -o "$OUT/upreset_test_legacy" tests/upreset_test.c
-run "user presets, the converter's build (FELUCCA_LEGACY): versions 1..3, PHYS DRUM and SAMPLE PERC -> DRUM, DIGITAL kept" "$OUT/upreset_test_legacy"
+run "user presets (UP_PUT parser, bank round trip, versions 4..6, grid records; DIGITAL and versions 1..3 read as empty)" "$OUT/upreset_test"
 
 $CC -o "$OUT/input_test" tests/input_test.c
 run "keys and buttons: fast press, long release, bouncy contacts (one note each), glitches, encoders" "$OUT/input_test"
@@ -256,10 +239,8 @@ if [ -f build/gen/felucca_tables.h ]; then
     run "DSP render (ANALOG preset 0)" "$OUT/hostsim" 0 0 1 "$OUT/render.wav"
     mkdir -p build/tracks_demo
     run "TRACKS: 4-track pattern, live recording (lengths, swing), voice budget, engine switch, cost" env TRACKS=build/tracks_demo "$OUT/hostsim" 0 0 1 "$OUT/tracks.wav"
-    $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/project_test" tests/project_test.c -lm
-    run "project formats, the converter's build (FUN1..FUN5 -> FUN6, the grid and song chain; DIGITAL -> FM6, SAMPLE PERC -> DRUM)" "$OUT/project_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/motion_test" tests/motion_test.c -lm
-    run "motion, whole-step chance, FUN7 migration, song restore, ARP repeat and the 1.2 ARP modes (the converter's build)" "$OUT/motion_test"
+    run "motion, whole-step chance, song restore, ARP repeat and the 1.2 ARP modes" "$OUT/motion_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/fixes13_test" tests/fixes13_test.c -lm
     run "1.3: Felucca's fixes (PAN +100, AUTOMATION KNOB 3 keeps its row)" "$OUT/fixes13_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/feat13_test" tests/feat13_test.c -lm
@@ -267,21 +248,13 @@ if [ -f build/gen/felucca_tables.h ]; then
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/insert_test" tests/insert_test.c -lm
     run "1.3: the INSERT (bit for bit off, every type bounded with no DC, MIX's glide, automation, stored)" "$OUT/insert_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/ratchet_test" tests/ratchet_test.c -lm
-    run "RATCH: x1..x4 in a step (notes, chords, drum hits), gates, chance, swing, projects (the converter's build), user presets, CHANCE page; FLAM" "$OUT/ratchet_test"
+    run "RATCH: x1..x4 in a step (notes, chords, drum hits), gates, chance, swing, user presets, CHANCE page; FLAM" "$OUT/ratchet_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/ties_test" tests/ties_test.c -lm
     run "2.0 TIES (#25): notes going on while others start, a miss, a tie never starts a note, MONO, RATCH, STOP; record version 3" "$OUT/ties_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/midi_control_test" tests/midi_control_test.c -lm
     run "USB/TRS clock, bend, sustain, ownership and panic recovery" "$OUT/midi_control_test"
     $CC -O1 -w -DFELUCCA_FM4=1 -Ibuild/gen -Ifirmware/src -o "$OUT/digital_test" tests/digital_test.c -lm
     run "DIGITAL (retired, built here with FELUCCA_FM4=1): operator envelopes/levels" "$OUT/digital_test"
-    $CC -O2 -w -DFELUCCA_FM4=1 -Ibuild/gen -Ifirmware/src -o "$OUT/fm4_test" tests/fm4_test.c -lm
-    mkdir -p build/fm4_demo
-    run "DIGITAL -> FM6: the conversion against DIGITAL (FELUCCA_FM4=1): pitch, centroid, RMS envelope; demos" \
-        "$OUT/fm4_test" build/fm4_demo
-    $CC -O2 -w -fsanitize=integer-divide-by-zero -fno-sanitize-recover=all -Ibuild/gen -Ifirmware/src \
-        -o "$OUT/fm4_div0_test" tests/fm4_div0_test.c -lm
-    run "DIGITAL -> FM6 without a divide by zero (#61): the same values as before, a 0.9 ORGAN project (UBSan)" \
-        "$OUT/fm4_div0_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/theme_test" tests/theme_test.c -lm
     run "themes: contrast, text blending and font metrics" "$OUT/theme_test"
     $CC -O1 -w -Ibuild/gen -Ifirmware/src -o "$OUT/text_ref_test" tests/text_ref_test.c -lm
@@ -292,12 +265,8 @@ if [ -f build/gen/felucca_tables.h ]; then
     fi
     $CC -O1 -w -Ibuild/gen -o "$OUT/settings_test" tests/settings_test.c
     run "settings: PER4 and SKS1, palette ids and preference preservation; (2.0) PER1..PER3 refused" "$OUT/settings_test"
-    $CC -O1 -w $LEGACY -Ibuild/gen -o "$OUT/settings_test_legacy" tests/settings_test.c
-    run "settings, the converter's build (FELUCCA_LEGACY): PER1..PER3 migration" "$OUT/settings_test_legacy"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/ui_test" tests/ui_test.c -lm
     run "UI: sounds keep steps, undo, recording, MIDI overflow, pending saves, panel recovery, drum grid, song chain, GREY gray, MONO neutral" "$OUT/ui_test"
-    $CC -w $LEGACY -Ibuild/gen -Ifirmware/src -o "$OUT/ui_test_legacy" tests/ui_test.c -lm
-    run "UI, the converter's build (FELUCCA_LEGACY): DIGITAL sounds, SAMPLE PERC and old GM projects converted as 1.x did" "$OUT/ui_test_legacy"
     $CC -w -DFELUCCA_CDC=0 -Ibuild/gen -Ifirmware/src -o "$OUT/ui_test_rel" tests/ui_test.c -lm
     run "UI as a release builds it (FELUCCA_CDC=0, build.py --release): no USB SERIAL row, the rest as above" "$OUT/ui_test_rel"
     FV=$(sed -n 's/^#define FELUCCA_VERSION "\([^"]*\)".*/\1/p' firmware/src/felucca.c)   # (the splash, ABOUT: the real version)
@@ -319,13 +288,9 @@ if [ -f build/gen/felucca_tables.h ]; then
     $CC -O2 -w -Ibuild/gen -Ifirmware/src -o "$OUT/click_test" tests/click_test.c -lm
     run "metronome and count-in: beats sample for sample (internal and external clock), accent, level, MASTER, not in USB, count-in timing, notes onto step 1" "$OUT/click_test"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/persistence_test" tests/persistence_test.c -lm
-    run "persistence: deferred settings, retry and failed-save rollback; (2.0) a FUN5 slot OLD FORMAT" "$OUT/persistence_test"
-    $CC -w $LEGACY -Ibuild/gen -Ifirmware/src -o "$OUT/persistence_test_legacy" tests/persistence_test.c -lm
-    run "persistence, the converter's build (FELUCCA_LEGACY): an SKF2 autosave, FUN5 and FUN7 slots" "$OUT/persistence_test_legacy"
+    run "persistence: deferred settings, retry and failed-save rollback" "$OUT/persistence_test"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/bank_test" tests/bank_test.c -lm
     run "pattern bank (Skiff): patterns kept exactly, torn saves, fallback, wear, the sequence wrap" "$OUT/bank_test"
-    $CC -w $LEGACY -Ibuild/gen -Ifirmware/src -o "$OUT/bank_test_legacy" tests/bank_test.c -lm
-    run "pattern bank, the converter's build (FELUCCA_LEGACY): projects of before become patterns (proj_migrate)" "$OUT/bank_test_legacy"
     $CC -w -DBOARD_SMK37=1 -Ifirmware/hal -Ibuild/gen -Ifirmware/src -o "$OUT/bank_test_smk" tests/bank_test.c -lm
     run "pattern bank on the SMK-37 Pro layout (USRFLASH 0xD6000..)" "$OUT/bank_test_smk"
     $CC -w -DBOARD_SMK37=1 -Ifirmware/hal -Ibuild/gen -Ifirmware/src -o "$OUT/persistence_test_smk"         tests/persistence_test.c -lm
@@ -333,13 +298,7 @@ if [ -f build/gen/felucca_tables.h ]; then
     $CC -O1 -w -DBOARD_SMK37=1 -Ifirmware/hal -Ibuild/gen -Ifirmware/src -o "$OUT/smk_ui_test" tests/smk_ui_test.c -lm
     run "SMK-37 Pro controls (SMK37_UX.md): pads, colours, faders, entries, outer keys, KEY VELOCITY, wheels, the pedal holding the keys, SHIFT, MASTER, TRS clock" "$OUT/smk_ui_test"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/backup_test" tests/backup_test.c -lm
-    run "full backup: CRC before writes, stale runtime, USB reset / timeout, malformed objects; (2.0) OLD FORMAT slots backed up" "$OUT/backup_test"
-    $CC -w $LEGACY -Ibuild/gen -Ifirmware/src -o "$OUT/backup_test_legacy" tests/backup_test.c -lm
-    run "full backup, the converter's build (FELUCCA_LEGACY): older projects, 1.0's FM6 bank, SKF2" "$OUT/backup_test_legacy"
-    $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/conv_test" tests/conv_test.c -lm
-    mkdir -p "$OUT/conv"
-    run "(2.0) the converter (web/conv/conv.c): archives of before -> SKF4 and presets v6; a fresh unit plays them" \
-        "$OUT/conv_test" "$OUT/conv"
+    run "full backup: CRC before writes, stale runtime, USB reset / timeout, malformed objects; older project formats refused" "$OUT/backup_test"
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/editor_test" tests/editor_test.c -lm
     run "editor: real C protocol, malformed transfers, queue recovery, MENU settings (writes build/host/menu.json)" \
         env MENU_JSON="$OUT/menu.json" "$OUT/editor_test"
@@ -348,8 +307,6 @@ if [ -f build/gen/felucca_tables.h ]; then
     $CC -w -Ibuild/gen -Ifirmware/src -o "$OUT/robust_test" tests/robust_test.c -lm
     run "robustness: crafted sample slots, engine numbers, retained old projects, preset patterns, malformed requests" \
         "$OUT/robust_test"
-    $CC -w $LEGACY -Ibuild/gen -Ifirmware/src -o "$OUT/robust_test_legacy" tests/robust_test.c -lm
-    run "robustness, the converter's build (FELUCCA_LEGACY): FUN8 / FUN5 engine numbers, a retained FUN5 slot" \
         "$OUT/robust_test_legacy"
     $CC -O2 -w -Ibuild/gen -Ifirmware/src -o "$OUT/mod_test" tests/mod_test.c -lm
     mkdir -p build/mod_demo
@@ -422,21 +379,8 @@ EOF
     $CC -O2 -w -Ibuild/gen -Ifirmware/src -o "$OUT/fm6_test" tests/fm6_test.c -lm
     mkdir -p build/fm6_demo
     run "FM6: algorithms, envelopes, retrigger, DC, clipping, macros, patch formats, voices, cost, demos" "$OUT/fm6_test" build/fm6_demo
-    # SLICE is in the standard build (firmware/src/core.h): its test always runs (after #22 by andreahaku)
-    if grep -q '^#define SLC_BREAK_BPM ' build/gen/felucca_samples.h; then
-        mkdir -p build/slice_demo
-        python3 tools/gen_waves.py build/genwav >/dev/null      # (the loop's drums; the BREAK no longer uses them)
-        python3 tests/slice_loop.py build/slice_demo/loop
-        python3 tools/fm1_sample_upload.py build LOOP build/slice_demo/loop build/slice_demo/loop.wav:60 >/dev/null
-        $CC -O2 -w -Ibuild/gen -Ifirmware/src -o "$OUT/slice_test" tests/slice_test.c -lm
-        run "SLICE: tables, onsets, reverse, keys, modes, MAN slices and their store, demos" "$OUT/slice_test" \
-            build/slice_demo/loop build/slice_demo
-        $CC -O2 -w -Ibuild/gen -Ifirmware/src -o "$OUT/smpmix_test" tests/smpmix_test.c -lm
-        run "(#21) a user slot's sounds: LEVEL, REV, DLY, their store with the slot, old slots as uploaded; (#35) a slot as DRUM's KIT" "$OUT/smpmix_test"
-    else
-        echo "== SLICE: build/ was made with FELUCCA_SLICE=0 (no BREAK); run ./build.sh without it first"
-        fail=1
-    fi
+    $CC -O2 -w -Ibuild/gen -Ifirmware/src -o "$OUT/smpmix_test" tests/smpmix_test.c -lm
+    run "(#21) a user slot's sounds: LEVEL, REV, DLY, their store with the slot, old slots as uploaded; (#35) a slot as DRUM's KIT" "$OUT/smpmix_test"
 else
     echo "== skip hostsim (run ./build.sh once)"
 fi
@@ -463,7 +407,7 @@ else
     run "ASan/UBSan: update loader (other app -> this build)" "$A/ldr_test" "$OUT/old.fwsc" build/felucca.fwsc
     $SCC -DOWN_PKG=1 -o "$A/ota_test" tests/ota_test.c
     run "ASan/UBSan: M-UPGRADE entry (own loader)" "$A/ota_test" build/felucca.fwsc
-    for t in editor_test project_test backup_test conv_test robust_test bank_test duck_test persistence_test ui_test; do
+    for t in editor_test backup_test robust_test bank_test duck_test persistence_test ui_test; do
         $SCC -o "$A/$t" tests/$t.c -lm
         run "ASan/UBSan: $t" "$A/$t"
     done
@@ -471,8 +415,6 @@ else
     run "ASan/UBSan fuzz: editor SysEx and raw USB-MIDI packets (20000, seed 7)" "$A/fuzz_ed" 20000 7
     $SCC -o "$A/fuzz_proj" tests/fuzz_proj.c -lm
     run "ASan/UBSan fuzz: project stores -> import -> restore -> render (5000, seed 13)" "$A/fuzz_proj" 5000 13
-    $SCC $LEGACY -o "$A/fuzz_proj_legacy" tests/fuzz_proj.c -lm
-    run "ASan/UBSan fuzz: the converter's readers (FELUCCA_LEGACY), the same (5000, seed 13)" "$A/fuzz_proj_legacy" 5000 13
     $SCC -o "$A/fuzz_smp" tests/fuzz_smp.c -lm
     run "ASan/UBSan fuzz: user sample slot headers -> scan -> SAMPLE / GRAIN / SLICE (1000, seed 17)" "$A/fuzz_smp" 1000 17
 fi
@@ -506,9 +448,6 @@ else
     run "browser emulator: the same song from the native build" "$OUT/emu_native" "$OUT/emu_native.f32"
     run "browser emulator: boot, keys, MIDI, screen, LEDs, PLAY, a save kept across instances, = native, cost" \
         node web/emu/emu_test.mjs build/emu/felucca.wasm "$OUT/emu_native.f32"
-    run "(2.0) the converter to WebAssembly (web/conv/build.sh -> build/conv)" sh web/conv/build.sh
-    run "(2.0) the converter in the page (web/conv/conv.js): conv.wasm = the native build, the write-back set" \
-        node web/conv/conv_test.mjs build/conv/conv.wasm "$OUT/conv"
 fi
 
 [ $fail -eq 0 ] && echo "ALL HOST TESTS PASSED" || { echo "HOST TESTS FAILED"; exit 1; }

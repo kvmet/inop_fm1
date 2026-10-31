@@ -133,9 +133,9 @@ reads it, a project keeps it): `SET` of `G_ENGSEL` = 1 (DIGITAL's first preset),
 load converts them), projects with DIGITAL tracks (their motion on E1..E8 and ids 61..80 is dropped). The track
 reports engine 12 (FM6) and the FM6 preset that covers the sound. The editor converts DIGITAL patches of library
 files the same way (it equals the firmware's, `test_web.mjs`).
-**(Skiff 2.0)** The conversion is the converter's alone (web/conv). On the device `SET` of `G_ENGSEL` = 1 and `PRESET`
+**(Skiff 2.0)** On the device `SET` of `G_ENGSEL` = 1 and `PRESET`
 1 k give FM6 (its first preset, its preset k), `UP_PUT` of engine 1 answers rc 1, a slot stored with engine 1 lists as
-empty (OLD FORMAT on the device), and a project with a DIGITAL track does not load.
+empty, and a project with a DIGITAL track does not load.
 
 The four FM operator envelopes (the DIGITAL engine's OP1..OP4 ENV and OP LEVEL pages, `eng_digital.c`) are
 twenty track parameters at ids 61..80, five per operator: operator k (1..4) has `ATK`, `DEC`, `SUS`, `REL`,
@@ -308,7 +308,7 @@ numbered 0..31 (the device shows U01..U32).
   E1..E8 = DRUM KIT's {0, 64, 70, 64, 64, 100, 0, 0}, the other values and the pattern as they were). Projects
   and `PRESET` 4 / 4 do the same (a project's track keeps its steps). SET 4 itself stays (`DESC` names it "PIANO":
   an alias, as SET 1; a `SET` of 4 lands on 0), and USR1..USR3 stay 5..7; GRAIN's SRC 4 plays PIANO.
-  (Skiff 2.0) Both rewrites are the converter's (web/conv): 2.0 stores neither kind (a record by `UP_PUT` stays as it is
+  (Skiff 2.0) 2.0 stores neither kind (a record by `UP_PUT` stays as it is
   sent), and `PRESET` 4 / 4 loads SAMPLE's PIANO.
 - **DRUM KIT 1..3** were HAND, CYM and H+CYM until 1.0.4 (STD with a conga / claves, a cymbal, both). Since 1.0.5
   they play the VA kits 66, 10 and 77, and a record holding one loads as that kit: `UP_GET` / `UP_LOAD` give KIT 6, 5
@@ -748,7 +748,7 @@ this firmware sends 3. Requests name objects, never flash addresses.
 | --- | --- | --- |
 | 0 | runtime: the music being played now, as a FUN9 project (1.0.x: FUN8, 3584; firmware before FM6: FUN7, 3388; Skiff: SKF1, 3840; Skiff phase 5: SKF2, 1280; phase 6: SKF3, 2048; 2.0: SKF4, 2560) | 3648 (Skiff: 3840; phase 5: 1280; phase 6: 2048; 2.0: 2560) |
 | 1 | settings (palette, speaker, HOLD time, favorites, panel calibration, ...; (Skiff 2.0) SKS1: `53 4B 53 31`, its layout in design/TIER_B.md section 6) | the settings record's size (2.0: 656; PER4 before: 572) |
-| 2..5 | PROJECT slots 1..4 (FUN9; 1.0.x: FUN8, 3584; Skiff: the slot as stored, 3840: an SKF4, SKF3 or SKF2 in its first 2560, 2048 or 1280 bytes and 0 after, or a project the device has not converted; (2.0) the record alone, SKF3 or SKF4, and a slot of an older format (OLD FORMAT on the device) as flash keeps it) | 3648 (Skiff: 3840; 2.0: 2048 or 2560, an older format's own size), or 0 if empty |
+| 2..5 | PROJECT slots 1..4 (FUN9; 1.0.x: FUN8, 3584; Skiff: the slot as stored, 3840: an SKF4, SKF3 or SKF2 in its first 2560, 2048 or 1280 bytes and 0 after; (2.0) the record alone, SKF3 or SKF4) | 3648 (Skiff: 3840; 2.0: 2048 or 2560, an older format's own size), or 0 if empty |
 | 6, 7 | user preset banks (slots 1..16, 17..32) | the bank's size, or 0 if empty |
 | 8 | the FM6 patch bank of 1.0..1.0.2 (B1..B27). Since 1.0.3 always listed empty (see below); (2.0) `PUT` takes it only empty | 3472, or 0 if empty |
 | 9 | the user presets' FM6 patches (1.0.3; `up_fm6.c`: per slot a tag and the packed patch) | 3728, or 0 if none |
@@ -787,12 +787,9 @@ ids 1..9 are written to flash (settings and presets are applied too). Nothing is
 The web editor sends ids 2..7 and the samples first, then 1, then 0 last. A failed restore can leave
 earlier objects restored; the file is still the source.
 
-**Skiff 2.0 (design/TIER_B.md 10)** reads only what Skiff 1.0 on writes: ids 0 and 2..5 take SKF3 and SKF4, the user
-preset banks versions 4..6, and id 8 only empty (rc 1 at begin otherwise). The web editor converts an archive of
-before first (web/conv: the device's own code built with the old readers) and restores the result; the installer
-does the same for what 2.0 can't read after it installs. A slot's whole project of an older format (its own size, its
-hash) is stored as it is, OLD FORMAT on the device, and backed up as stored, so it can be converted later (the
-converter keeps one when the archive's patterns are full); a damaged one, and an id 0 of an older format, answer rc 2.
+**Skiff 2.0** reads only what Skiff 1.0 on writes: ids 0 and 2..5 take SKF3 and SKF4 (rc 1 at begin for another
+length), the user preset banks versions 4..6, and id 8 only empty (rc 1 at begin otherwise). A slot left in flash in
+another format reads as empty.
 When id 0 commits the device converts nothing.
 
 | rc | Meaning |

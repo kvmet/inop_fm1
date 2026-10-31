@@ -240,9 +240,6 @@ static void fm1_main(void)
         ui_set_rev = 1;                       /* off again */
         settings_save();
     }
-#if FELUCCA_LEGACY
-    proj_migrate(boot_clean);                 /* (Skiff phase 5) projects of before: SKF2, their tracks patterns */
-#endif
     unit_g_adopt = ui_set_rev < 2u;           /* (Skiff U3, R8) the first boot: the session's CLOCK MIDI IN TUNE .. */
     autosave_boot(boot_clean);                /* (1.2) the last session's music, under the splash */
     unit_g_boot();                            /* .. become the unit's; later the unit's are put back over it (ui.c) */

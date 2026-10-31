@@ -5,8 +5,6 @@
  *   PLAY       x1..x4: that many note-ons in one pass of the step, in equal parts of it, each retriggered after its
  *              gate; chords and the DRUM grid's hits repeat whole; x1 slides and ties out as before, x2..x4 never;
  *              the chance is rolled once per pass for all its parts; swing; STOP and an edit to fewer end them.
- *   PROJECTS   FUN8 round trip of x1..x4 (bit 7 of the velocity and chance bytes), an x1 project packs those bytes
- *              as before, FUN7 / FUN6 images load x1.
  *   PRESETS    a user preset's note pattern keeps it (flags 8 | 16, UP_PUT too); a drum grid record has no room: x1.
  *   UI         SEQ > CHANCE KNOB 3 (RATCH x1..x4, clamped, the cursor step; dimmed on a REST, a TIE, an empty
  *              step); the piano roll and the DRUM grid draw a ratcheted step in its parts, the roll no slide line
@@ -16,7 +14,6 @@
  *              preset's pattern keep it.
  * The editor protocol (STEP_SET / TRACK_STEP, INFO 52 01 04) is in tests/editor_test.c. Built and run by
  * tests/run_tests.sh. */
-#define FELUCCA_LEGACY 1                        /* ((2.0) its projects are SKF1 and older: the converter's build) */
 #define UI_TEST_NO_MAIN 1
 #include "ui_test.c"
 
@@ -153,86 +150,6 @@ static int play(void)
     return bad;
 }
 
-static int projects(void)
-{
-    int bad = 0, ok = 1;
-    project_t before, after;
-    project_store_t packed;
-    uint32_t i, k, pos;
-    track_t *t;
-    ui_power_on();
-    t = &trk[0];
-    for (i = 0; i < 8u; i++) {
-        t->step[i] = (step_t){{(uint8_t)(60 + i)}, 1, ST_NOTE, i & 1u ? SF_ACCENT : 0u, i & 2u ? 127u : 90u};
-        step_set_ratchet(&t->step[i], 1u + i % 4u);
-        step_set_chance(&t->step[i], i < 4u ? 100u : i == 4u ? 0u : 30u);
-    }
-    trk[3].step[5].hit = 0x81; trk[3].step[5].acc = 0x80; trk[3].step[5].time = ST_NOTE;
-    step_set_ratchet(&trk[3].step[5], 4);
-    project_capture(&before);
-    proj_power_on(&before, PROJ_NT); before.sum = proj_sum(&before);   /* ((Skiff phase 6) SKF1 holds four tracks: the rest
-                                                                        * come back as at power-on) */
-    ok = proj_pack(&packed, &before) && proj_import(&after, &packed, sizeof packed) && !memcmp(&before, &after, sizeof before);
-    for (i = 0; ok && i < 8u; i++)
-        ok &= step_ratchet(&after.t[0].step[i]) == 1u + i % 4u && step_chance(&after.t[0].step[i]) == step_chance(&before.t[0].step[i]) &&
-              after.t[0].step[i].vel == before.t[0].step[i].vel;
-    bad += check("FUN8: x1..x4 round trip with their velocity, accent, chance (0 and 30 %) and lane hits", ok &&
-                 step_ratchet(&after.t[3].step[5]) == 4u && after.t[3].step[5].hit == 0x81);
-    pos = 68u + PROJ_NP + 2u + 3u * 9u;              /* step 3 of track 1: x4 -> bit 7 of its velocity and chance */
-    bad += check("  x4 is bit 7 of the velocity and the chance bytes", (packed.raw[pos + 5] & 128u) && (packed.raw[pos + 8] & 128u) &&
-                 (packed.raw[pos + 5] & 127u) == before.t[0].step[3].vel);
-    for (k = 0; k < NTRK; k++)
-        for (i = 0; i < NSTEP; i++)
-            trk[k].step[i].flags &= (uint8_t)~SF_RATCH;
-    project_capture(&before);
-    proj_pack(&packed, &before);
-    ok = 1;
-    for (k = 0, pos = 68u; k < PROJ_NT; k++, pos += PROJ_NP + 2u + NSTEP * 9u + PROJ_NUDGE_BYTES)   /* ((Skiff) SKF1) */
-        for (i = 0; i < NSTEP; i++)
-            ok &= packed.raw[pos + PROJ_NP + 2u + i * 9u + 5u] < 128u && packed.raw[pos + PROJ_NP + 2u + i * 9u + 8u] < 128u;
-    bad += check("  a project without ratchets: every velocity and chance byte below 128, as firmware before wrote", ok);
-    {   /* a FUN7 image (its tracks without patches) as firmware before RATCH wrote it: x1 */
-        project_store_t old;
-        uint32_t sum, magic = PROJ_MAGIC_V7, size = PROJ_STORE_V7;
-        project_t fun7;
-        uint32_t src = 68u, dst = 68u, n = PROJ_NP + 2u + NSTEP * 9u;
-        memcpy(&old, &packed, sizeof old);
-        for (k = 0; k < PROJ_NT; k++, src += n + PROJ_NUDGE_BYTES, dst += n)   /* ((Skiff) SKF1's NUDGE planes out) */
-            memmove(old.raw + dst, packed.raw + src, n);
-        memmove(old.raw + dst, packed.raw + src, sizeof(chain_config_t) + sizeof(motion_store_t));
-        memcpy(old.raw, &magic, 4); memcpy(old.raw + 4, &size, 4);
-        memset(old.raw + PROJ_STORE_V7 - 4u - PROJ_NAME_LEN, 0, PROJ_NAME_LEN);
-        sum = proj_hash(old.raw, PROJ_STORE_V7 - 4u); memcpy(old.raw + PROJ_STORE_V7 - 4u, &sum, 4);
-        ok = proj_import(&fun7, &old, PROJ_STORE_V7);
-        for (k = 0; ok && k < PROJ_NT; k++)
-            for (i = 0; i < NSTEP; i++)
-                ok &= step_ratchet(&fun7.t[k].step[i]) == 1u;
-        bad += check("  FUN7 of before: every step x1", ok && fun7.t[0].step[1].flags == SF_ACCENT);
-    }
-    {   /* FUN6 (10-byte steps): only accent and slide come over, x1 */
-        project_v6_t v6;
-        memset(&v6, 0, sizeof v6);
-        v6.magic = PROJ_MAGIC_V6; v6.size = sizeof v6; v6.parts = PROJ_PARTS; v6.phys = PROJ_PHYS;
-        memcpy(v6.g, before.g, sizeof v6.g);
-        chain_defaults(&v6.chain);
-        for (k = 0; k < PROJ_NT; k++) {              /* ((Skiff phase 6) FUN6 holds four tracks) */
-            for (i = 0; i < 69u; i++) v6.t[k].p[i] = TP[i < 61u ? i : i - 61u + P_E0].def;
-            v6.t[k].step[0] = (step10_t){{60}, 1, ST_NOTE, 0xFBu, 100, 0, 0};   /* (stray high bits) */
-        }
-        v6.sum = proj_hash(&v6, sizeof v6 - 4u);
-        bad += check("  FUN6: x1, accent and slide kept", proj_import(&after, &v6, sizeof v6) &&
-                     step_ratchet(&after.t[0].step[0]) == 1u && after.t[0].step[0].flags == (SF_ACCENT | SF_SLIDE));
-    }
-    ui_power_on();                                   /* a real save and load */
-    step_set_ratchet(&trk[1].step[7], 3);
-    trk[1].step[7].time = ST_NOTE; trk[1].step[7].n = 1; trk[1].step[7].note[0] = 50;
-    project_save(2);
-    bank_put(1, 1, 0);                               /* (phase 5: T2 onto a copy, B: the edit its) */
-    step_set_ratchet(&trk[1].step[7], 1);
-    project_load(2);
-    bad += check("  project save and load keep the ratchet", step_ratchet(&trk[1].step[7]) == 3u);
-    return bad;
-}
 
 static int presets(void)
 {
@@ -417,21 +334,6 @@ static int flam(void)
     step_set_rflam(&t->step[0], 5);
     bad += check("  RATCH or FLAM: x3 drops the flam, FLAM sets x1", ok && step_ratchet(&t->step[0]) == 1u &&
                  step_rflam(&t->step[0]) == 5u);
-    ui_power_on();                                   /* a project: bit 7 of the step's meta byte */
-    trk[0].step[3] = (step_t){{62}, 1, ST_NOTE, SF_ACCENT, 90};
-    step_set_rflam(&trk[0].step[3], 5);
-    project_capture(&before);
-    proj_power_on(&before, PROJ_NT); before.sum = proj_sum(&before);   /* ((Skiff phase 6) four tracks in SKF1) */
-    ok = proj_pack(&packed, &before) && proj_import(&after, &packed, sizeof packed) && !memcmp(&before, &after, sizeof before);
-    pos = 68u + PROJ_NP + 2u + 3u * 9u;              /* step 3 of track 1 */
-    ok &= (packed.raw[pos + 4] & 128u) && (after.t[0].step[3].flags & SF_FLAM) && (after.t[0].step[3].flags & SF_ACCENT);
-    packed.raw[pos + 5] |= 128u;                     /* FLAM with RATCH x2: no such step, refused */
-    {
-        uint32_t sum = proj_hash(packed.raw, PROJ_STORE_SIZE - 4u);
-        memcpy(packed.raw + PROJ_STORE_SIZE - 4u, &sum, 4);
-    }
-    bad += check("  a project keeps it (bit 7 of the meta byte); FLAM with RATCH x2 is refused", ok &&
-                 !proj_import(&after, &packed, sizeof packed));
     return bad;
 }
 
@@ -552,7 +454,7 @@ static int nudge(void)
 
 int main(void)
 {
-    int bad = play() + projects() + presets() + screens() + flam() + nudge();
+    int bad = play() + presets() + screens() + flam() + nudge();
     printf("%s\n", bad ? "RATCHET TEST FAILED" : "ratchet tests passed");
     return bad != 0;
 }

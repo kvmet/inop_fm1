@@ -8,9 +8,7 @@ static int project_save(uint32_t slot);
 static void panel_setup(void);
 static void project_load(uint32_t slot);
 static int project_used(uint32_t slot);
-static int proj_old(uint32_t slot);          /* ((2.0) OLD FORMAT: project.c) */
 static int up_used(uint32_t k);              /* user presets: upreset.c */
-static int up_old(uint32_t k);               /* ((2.0) OLD FORMAT) */
 static int up_load(uint32_t k);
 static uint32_t up_count(void);
 static uint32_t up_nth(uint32_t n);
@@ -1358,7 +1356,7 @@ typedef struct {
  * are undone (each then holds the track as it was after it: its redo). A copy is one swap, so undo and redo are the
  * same act (undo_step). A new copy drops the undone ones (a new edit ends the redo); the oldest goes when all UNDO_N
  * are used. `undo` is the newest: loads in a row share it as before */
-#define UNDO_N 8u
+#define UNDO_N 4u
 #define UNDO_WIN 180u                    /* the undo window, frames (~2.7 s): OCT- back, OCT+ redo (undo_step) */
 static undo_t undo_ring[UNDO_N] __attribute__((section(".ramx")));
 static uint8_t undo_n, undo_top, undo_back;
@@ -1888,48 +1886,6 @@ static void midi_pc_poll(void)                       /* main loop (ui_input) */
 #define preset_listed(e) (eng_allowed(song.sel, e) ? preset_shown(e) : 0u)   /* ((Skiff phase 6) the PRESETS list: what
                                                                          * the selected track may play) */
 
-#if !FELUCCA_FM4 && FELUCCA_LEGACY
-/* DIGITAL (engine 1, retired): t's sound = p, values as DIGITAL has them, converted to FM6 with a patch of its own
- * (fm4_convert.c). Every path that brings a DIGITAL sound into a track ends here: a track never keeps engine 1.
- * ((2.0) The converter's alone: 2.0 takes no DIGITAL sound, and set_engine_of makes engine 1 FM6) */
-static void fm4_apply(track_t *t, int16_t *p)
-{
-    uint8_t v[FP_SIZE + 1u];
-    uint32_t pr = fm4_convert(p, v), tr = trk_index(t), f;
-    fm6_set_patch(tr, v);
-    f = motion_guard();                               /* the audio ISR sees the old sound or the new one */
-    memcpy(t->p, p, sizeof t->p);
-    t->eng_req = ENGI_FM6;
-    t->preset = (uint8_t)pr;
-    motion_unguard(f);
-    fm6_adopt(tr);                                    /* SLOT OWN: the converted patch is the track's own */
-}
-static void fm4_track(track_t *t)                     /* t holds a DIGITAL sound (engine 1): convert it */
-{
-    int16_t p[P_COUNT];
-    memcpy(p, t->p, sizeof p);
-    fm4_apply(t, p);
-}
-/* DIGITAL preset k (a stored preset number of engine 1: the editor's PRESET, SET G_ENGSEL, an old project's
- * power-on sound): its sound as a preset load sets it, converted. The sound only (not the steps, not param_kept) */
-static void fm4_load_preset(track_t *t, uint32_t k)
-{
-    int16_t p[P_COUNT];
-    uint32_t i;
-    load_begin(t, UNDO_SOUND);
-    panic_req |= (uint8_t)(1u << trk_index(t));
-    t->user = 0;
-    if (t == TSEL)
-        sync_reload = 1;
-    memcpy(p, t->p, sizeof p);
-    for (i = 0; i < P_E0; i++)
-        if (!param_kept(i))
-            p[i] = TP[i].def;
-    fm4_preset_values(p, k);
-    fm4_apply(t, p);
-    load_end(t);
-}
-#endif
 
 static int set_engine_of(track_t *t, uint32_t ei);
 /* e's preset pi (preset_orig's) into the values p: all but param_kept's ((2.0, #30) bank.c esnd_make's too) */
@@ -1961,18 +1917,6 @@ static void apply_preset_to(track_t *t, uint32_t pi)
 {
     const engine_t *e = ENGINES[t->eng_req % NENGINES];
     uint32_t kit;
-#if !FELUCCA_FM4 && FELUCCA_LEGACY
-    if (t->eng_req % NENGINES == ENGI_DIGITAL) {
-        fm4_load_preset(t, pi);
-        return;
-    }
-#endif
-#if FELUCCA_LEGACY
-    if (t->eng_req % NENGINES == ENGI_SAMPLE && pi == SMP_SET_PERC) {   /* SAMPLE preset 4 was PERC (retired, a stored */
-        set_engine_of(t, ENGI_DRUM);                  /* number: the editor's PRESET, a favourite): DRUM's kit */
-        return;                                       /* (core.h drum_from_perc; (2.0) PIANO's alias: PIANO) */
-    }
-#endif
     kit = t->eng_req % NENGINES == ENGI_DRUMX ? DRUMX_PKIT[pi % NELEM(DRUMX_PKIT)] : 0u;   /* ((phase 9) the kit + 1) */
     load_begin(t, UNDO_SOUND | (kit ? UNDO_KIT : 0u));
     panic_req |= (uint8_t)(1u << trk_index(t));       /* MONO/POLY may change: release what sounds */
@@ -2002,7 +1946,7 @@ static int set_engine_of(track_t *t, uint32_t ei)
 {
     const engine_t *e;
     uint32_t i;
-#if !FELUCCA_FM4 && !FELUCCA_LEGACY
+#if !FELUCCA_FM4
     if (ei % NENGINES == ENGI_DIGITAL)               /* ((2.0) DIGITAL (retired; the editor's SET, PRESET): FM6 */
         ei = ENGI_FM6;
 #endif
@@ -2011,12 +1955,6 @@ static int set_engine_of(track_t *t, uint32_t ei)
         eng_refused(ei);
         return 1;
     }
-#if !FELUCCA_FM4 && FELUCCA_LEGACY
-    if (ei % NENGINES == ENGI_DIGITAL) {             /* DIGITAL (retired): its first preset, as FM6 */
-        fm4_load_preset(t, 0);
-        return 0;
-    }
-#endif
     load_begin(t, UNDO_SOUND);
     fm1_irq_off();
     t->eng_req = (uint8_t)(ei % NENGINES);

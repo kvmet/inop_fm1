@@ -171,7 +171,7 @@ static uint32_t eng_step_for(uint32_t k, uint32_t e, int32_t dir)   /* eng_step 
     return e;
 }
 
-/* the parts at power-on (engine, preset; the sequencers empty): bass, pad, lead, drums, (phase 6) a sample sound
- * and a second kit: ANALOG ACID, FM6 PAD (was DIGITAL PAD), LOFI PULSE LD, DRUM KIT, PIANO, DRUM KIT */
-static const uint8_t TRK_DEF[NPART][2] = {{0, 4}, {ENGI_FM6, 4}, {3, 0}, {ENGI_DRUM, 0}, {ENGI_SAMPLE, 0}, {ENGI_DRUM, 0}};
+/* the parts at power-on (engine, preset; the sequencers empty): bass, pad, lead, drums, a synthesized kit and a
+ * second kit: ANALOG ACID, FM6 PAD, LOFI PULSE LD, DRUM KIT, DRUM-X, DRUM KIT */
+static const uint8_t TRK_DEF[NPART][2] = {{0, 4}, {ENGI_FM6, 4}, {3, 0}, {ENGI_DRUM, 0}, {ENGI_DRUMX, 0}, {ENGI_DRUM, 0}};
 static uint32_t trk_def_engine(uint32_t i) { return TRK_DEF[i % NPART][0]; }

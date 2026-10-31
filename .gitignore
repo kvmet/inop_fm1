@@ -10,3 +10,6 @@ web/learn/local/
 
 # (Skiff 2.0) the converter's wasm, a dev copy of build/conv/conv.wasm (web/conv/build.sh)
 web/conv/conv.wasm
+
+# mkdocs build output
+site/

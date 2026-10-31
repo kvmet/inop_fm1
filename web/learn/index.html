@@ -302,11 +302,7 @@ footer p { max-width: 1240px; margin: 6px auto; }
       <p>New releases come out on <a href="https://github.com/illuminus5/skiff/releases">GitHub</a>, and the installer page then installs
         the newest. Install it the same way, over the Skiff you have: the loader rewrites only the firmware, so your projects, sounds,
         samples and settings stay. Which version you have: MENU › SYSTEM › ABOUT (<a href="#settings/about">chapter 18</a>).</p>
-      <p>From Skiff 1.x or Felucca to 2.0, the page first saves a complete backup to the computer (<code>Skiff-backup-<i>date</i>.json</code>:
-        keep it, it's the way back). 2.0 reads what Skiff 1.0 and later saved, and keeps it in newer formats from then on; after the
-        install the page converts what 2.0 can't read as it was (Felucca's projects and user sounds, DIGITAL sounds, the oldest formats),
-        writes only that back, and lists what it converted. A slot 2.0 can't read says OLD FORMAT on the unit and is kept as it is.
-        The way back to 1.x: install 1.4.x, then restore that backup in the <a href="../webapp/editor/">editor</a>.</p>
+      <p>This firmware reads projects saved as SKF3 or SKF4. A slot in any other format reads as empty, and SAVE writes over it.</p>
     </li>
     <li class="step" id="install/stopped">
       <h3>If it stops</h3>

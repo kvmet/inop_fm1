@@ -2209,17 +2209,9 @@ function makeMockDevice(opt = {}) {
         /* (Skiff phase 9) more for every engine (src/eng_*.c) */
         P("TRI BASS", [0, 1, 64, 0, 0, 0, 0, 100], [0, 60, 90, 20], 1),
         P("CHIP BELL", [2, 0, 20, 0, 30, 0, 0, 110], [0, 70, 0, 50])] },
-    { name: "SAMPLE", titles: ["SET", "TONE"], edit: [E("SET", ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", "USR1", "USR2", "USR3"], 0), D("PITCH", F.SEMI, -24, 24, 0), D("BITS", F.INT, 0, 127, 0),
+    { name: "SAMPLE", titles: ["SET", "TONE"], edit: [E("SET", ["NONE", "USR1", "USR2", "USR3"], 0), D("PITCH", F.SEMI, -24, 24, 0), D("BITS", F.INT, 0, 127, 0),
         E("LOOP", NONOFF, 1), D("CUTOFF", F.INT, 0, 127, 127), NONE, D("DRIVE", F.PCT, 0, 127, 0), NONE],
-      presets: [P("PIANO", [0, 0, 0, 1, 127, 0, 0, 0], [0, 127, 127, 70]), P("PIANO", [0, 0, 0, 1, 127, 0, 0, 0], [0, 127, 127, 70]),
-        P("FLUTE", [2, 0, 0, 1, 127, 0, 0, 0], [12, 80, 120, 60]), P("SAX", [3, 0, 0, 1, 127, 0, 0, 0], [12, 80, 120, 60]),
-        /* (Skiff phase 9) more for every engine (src/eng_*.c) */
-        P("PIANO", [0, 0, 0, 1, 127, 0, 0, 0], [0, 127, 127, 70]),
-        P("LOFI PIANO", [0, 0, 110, 1, 30, 0, 30, 0], [0, 127, 127, 70], 0, 0, [[95, 3], [9, 40], [13, 8]]),
-        P("MUSIC BOX", [0, 24, 0, 0, 110, 0, 0, 0], [0, 90, 0, 80]),
-        P("FLUTE PAD", [2, 0, 0, 1, 90, 0, 0, 0], [80, 90, 120, 100]),
-        P("DARK SAX", [3, -12, 0, 1, 26, 0, 48, 0], [22, 80, 120, 55], 1, 0, [[13, 8], [9, 84], [12, 100]]),
-        P("KOTO", [0, 12, 0, 0, 120, 0, 22, 0], [0, 72, 0, 50], 0, 0, [[6, 2]])] },
+      presets: [P("NONE", [0, 0, 0, 1, 127, 0, 0, 0], [5, 80, 100, 50])] },
     { name: "VOICE", titles: ["VOWEL", "TONE"], edit: [D("VOWEL", F.INT, 0, 127, 0), D("VOWEL2", F.INT, 0, 127, 64), D("TALK", F.TIME, 0, 127, 0),
         D("PITCH", F.SEMI, -12, 12, 0), D("BUZZ", F.PCT, 0, 127, 64), D("BREATH", F.PCT, 0, 127, 10), D("Q", F.PCT, 0, 127, 64), D("RANDOM", F.PCT, 0, 127, 0)],
       presets: [P("CHOIR AAH", [0, 0, 0, 0, 40, 22, 60, 0], [85, 90, 115, 95], 0, 5), P("VOX LEAD", [32, 0, 0, 2, 90, 8, 72, 0], [6, 70, 105, 55], 1, 4),
@@ -2253,7 +2245,7 @@ function makeMockDevice(opt = {}) {
         /* (Skiff phase 9) more for every engine (src/eng_*.c) */
         P("PEDAL BASS", [14, 4, 0, -4, 0, 20, 10, 0], [0, 64, 127, 30], 1),
         P("CLARINET", [9, 0, 2, -5, 0, 0, 14, 1], [24, 64, 120, 45], 1, 0, [[13, 8], [9, 89], [12, 70]])] },
-    { name: "GRAIN", titles: ["GRAIN", "SPRAY"], edit: [E("SOURCE", ["PIANO", "PIANO", "FLUTE", "SAX", "PIANO", "USR1", "USR2", "USR3"], 0),
+    { name: "GRAIN", titles: ["GRAIN", "SPRAY"], edit: [E("SOURCE", ["NONE", "USR1", "USR2", "USR3"], 0),
         D("POS", F.PCT, 0, 127, 32), D("SIZE", F.PCT, 0, 127, 80), D("DENSITY", F.PCT, 0, 127, 80),
         D("PITCH", F.SEMI, -24, 24, 0), D("SPREAD", F.PCT, 0, 127, 30), D("RANDOM", F.PCT, 0, 127, 10), D("TONE", F.PCT, 0, 127, 127)],
       presets: [P("CLOUD PAD", [2, 50, 92, 88, 0, 40, 14, 100], [70, 90, 120, 90], 0, 5), P("GLITCH", [3, 64, 24, 112, 0, 100, 90, 127], [0, 70, 100, 30], 0, 4),
@@ -2322,7 +2314,7 @@ function makeMockDevice(opt = {}) {
         /* (Skiff phase 9) more for every engine (src/eng_*.c) */
         P("PICK BASS", [0, 2, 12, 0, 16, 2, 0, 7], [0, 0, 127, 0], 1),
         P("GROWL BASS", [0, 5, 8, 0, 20, 0, 8, 3], [0, 0, 127, 0], 1, 0, [[14, 36], [9, 80], [95, 2]])] },
-    { name: "SLICE", titles: ["SLICE", "PLAYBACK"], edit: [E("SOURCE", ["BREAK", "USR1", "USR2", "USR3", "PIANO", "FUNK"], 0),
+    { name: "SLICE", titles: ["SLICE", "PLAYBACK"], edit: [E("SOURCE", ["NONE", "USR1", "USR2", "USR3"], 0),
         E("DIV", ["4", "8", "16", "32", "AUTO", "MAN"], 2), D("START", F.INT, 0, 31, 0), D("PITCH", F.SEMI, -24, 24, 0),
         E("MODE", ["ONE", "GATE", "LOOP"], 0), E("RVRS", ["OFF", "ON"], 0), D("DECAY", F.TIME, 0, 127, 127), D("CUTOFF", F.INT, 0, 127, 127)],
       presets: [P("CHOP", [0, 2, 0, 0, 0, 0, 127, 127], [0, 127, 127, 30], 0, 9), P("STUTTER", [0, 1, 0, 0, 1, 0, 90, 110], [0, 127, 127, 12], 0, 10),
@@ -2334,7 +2326,7 @@ function makeMockDevice(opt = {}) {
         P("FAST BREAK", [0, 2, 0, 5, 0, 0, 110, 127], [0, 127, 127, 25], 0, 0, [[95, 1]]),
         P("ROLL LOOP", [0, 3, 0, 0, 2, 0, 127, 127], [0, 127, 127, 20]),
         /* (Skiff phase 9) more for every engine (src/eng_*.c) */
-        P("FUNK BREAK", [5, 1, 0, 0, 0, 0, 127, 127], [0, 127, 127, 30])] },
+        P("FUNK BREAK", [0, 1, 0, 0, 0, 0, 127, 127], [0, 127, 127, 30])] },
     { name: "DRUM-X", titles: ["KIT", "HIT"], edit: [D("MORPH", F.PCT, 0, 127, 64), D("PITCH", F.ST16, 0, 127, 64),   /* (Skiff: JIANT FM's) */
         D("COLOR", F.PCT, 0, 127, 64), D("DECAY", F.PCT, 0, 127, 64), D("NOISE", F.PCT, 0, 127, 64), D("FM", F.PCT, 0, 127, 0),
         D("FOLD", F.PCT, 0, 127, 0), D("DRIVE", F.PCT, 0, 127, 0)],
@@ -2533,8 +2525,8 @@ function makeMockDevice(opt = {}) {
     st.bank[slot] = snapshot(name);
     clearSteps(); st.p[29] = 16;
   });
-  /* the power-on sounds (engines.c TRK_DEF): ACID, PAD, PULSE LD, DRUM KIT, (Skiff phase 6) PIANO, DRUM KIT */
-  [[1, FM6_E, 4], [2, 3, 0], [3, 10, 0], [4, 4, 0], [5, 10, 0], [0, 0, 4]].forEach(([i, e, p]) => { st.sel = i; setEngine(e); applyPreset(p); });
+  /* the power-on sounds (engines.c TRK_DEF): ACID, PAD, PULSE LD, DRUM KIT, OWN KIT, DRUM KIT */
+  [[1, FM6_E, 4], [2, 3, 0], [3, 10, 0], [4, 14, 0], [5, 10, 0], [0, 0, 4]].forEach(([i, e, p]) => { st.sel = i; setEngine(e); applyPreset(p); });
   /* the device powers on with its sequencers empty; the mock starts as a little demo to look at: track 1 with
      the ACID pattern, track 4 with BEAT (as SEQ > PATTERNS would load them), pads left, lead right */
   st.sel = 3; loadPattern(11);
@@ -3377,8 +3369,6 @@ const TEXT = {
     fm6NoFw: "このファームウェアには 6-OP FM（FM6）がありません。ファームウェアを更新すると使えます。",
     motion: "オートメーション", motionOn: "再生", motionClear: "オートメーションを消去", motionConfirm: "選択トラックのオートメーションを消しますか？", chance: "確率 %", ratchet: "ラチェット", flam: "フラム", cond: "条件", nudge: "ナッジ", motionStep: "ステップ", motionParam: "パラメーター", motionValue: "値", motionKind: "種類", motionLock: "ロック", motionAuto: "オート", motionRemoveConfirm: "%s を削除しますか？",
     backupTitle: "全体バックアップ", backupExport: "バックアップ保存", backupImport: "バックアップ復元", backupHelp: "現在の曲・A〜D・音色バンク・ユーザーサンプル・設定を、このパソコンへ保存。", backupOld: "全体バックアップには対応版への更新が必要です。", backupConfirm: "全体バックアップを復元しますか？ 現在の曲、保存データとサンプルを置き換えます。USBを抜かないでください。", backupWorking: "バックアップ処理中 ", backupDone: "バックアップを保存しました", backupRestored: "全体バックアップを復元しました",
-    backupConvert: "このバックアップには 2.0 より前のファームウェアのデータがあります。変換してから復元します:\n{list}", backupObjMusic: "現在の曲", backupObjSlot: "プロジェクト {n}", backupObjPresets: "ユーザー音色 {n}", backupObjFm6: "1.0 の FM6 バンク", backupObjPatches: "FM6 パッチ", backupObjPatterns: "パターン: 古いプロジェクトのステップ", backupRefused: "破損しているため変換できません。復元しません",
-    backupFull: "そのまま残します（本体では OLD FORMAT）: ステップを入れる空きパターンがありません。SAVE > PATTERNS で空けてからバックアップし、それを復元すると変換されます",
     backupNote: "注記: ",
     deviceDisplay: "本体の画面",
     deviceDisplayHelp: "FM-1 の画面に反映し、保存します。再生中の変更は停止後に保存されます。",
@@ -3516,8 +3506,6 @@ const TEXT = {
     fm6NoFw: "This firmware has no 6-OP FM (FM6). Update the firmware to use it.",
     motion: "Automation", motionOn: "Play automation", motionClear: "Clear automation", motionConfirm: "Clear this track's automation?", chance: "Chance %", ratchet: "Ratchet", flam: "Flam", cond: "Cond", nudge: "Nudge", motionStep: "Step", motionParam: "Parameter", motionValue: "Value", motionKind: "Kind", motionLock: "LOCK", motionAuto: "AUTO", motionRemoveConfirm: "Remove %s?",
     backupTitle: "Complete backup", backupExport: "Save backup", backupImport: "Restore backup", backupHelp: "Save the current music, A–D, sound banks, user samples and settings to this computer.", backupOld: "Complete backups need firmware with archive support.", backupConfirm: "Restore this complete backup? Current music, saved data and samples will be replaced. Keep USB connected.", backupWorking: "Backing up / restoring ", backupDone: "Backup saved", backupRestored: "Complete backup restored",
-    backupConvert: "This backup holds data from firmware before 2.0. It is converted first, then restored:\n{list}", backupObjMusic: "the music", backupObjSlot: "project {n}", backupObjPresets: "user sounds {n}", backupObjFm6: "FM6 bank of 1.0", backupObjPatches: "FM6 patches", backupObjPatterns: "patterns: the old projects' steps", backupRefused: "damaged, so not converted: left out of the restore",
-    backupFull: "kept as it was (OLD FORMAT on the unit): no pattern was free for its steps. Free some (SAVE > PATTERNS), take a backup and restore that to convert it",
     backupNote: "noted: ",
     deviceDisplay: "Device display",
     deviceDisplayHelp: "Changes apply to the FM-1 screen and save. Changes made while playing save after STOP.",
@@ -4617,50 +4605,15 @@ function renderBackup() {
   $("backup-help").textContent = t(caps & 1 ? "backupHelp" : "backupOld");
 }
 const backupModule = () => import("./fm1backup.js");
-/* ((2.0, Tier B 10) web/conv/conv.js's report: a line for each object it changes (the pattern chunks counted) */
-function convLines(report) {
-  const name = (id) => id === 0 ? t("backupObjMusic") : id <= 5 ? t("backupObjSlot").replace("{n}", "ABCD"[id - 2])
-    : id <= 7 ? t("backupObjPresets").replace("{n}", id === 6 ? "1-16" : "17-32") : id === 8 ? t("backupObjFm6") : t("backupObjPatches");
-  const lines = [], pats = report.filter((x) => x.id >= 16 && x.id < 32 && x.what !== "kept").length;
-  for (const x of report)
-    if ((x.what !== "kept" || x.note) && x.id !== 1 && (x.id < 16 || x.id > 31))
-      lines.push(`${name(x.id)}: ${x.what.startsWith("refused") ? t("backupRefused") : x.what.startsWith("kept as")
-        ? t("backupFull") : x.what === "kept" ? x.was : `${x.was} -> ${x.now}`}${x.note ? `\n  ${t("backupNote")}${x.note}` : ""}`);
-  if (pats) lines.push(t("backupObjPatterns"));
-  return lines.join("\n");
-}
-const backupProgress = (done, total) => sayK("backupWorking", `${Math.round(done / Math.max(1, total) * 100)}%`);
-$("backup-export").addEventListener("click", () => op(async () => {
-  const d = dev;
-  if (!(d?.info?.backupCaps & 1)) return;
-  const { captureBackup } = await backupModule();
-  assertSession(d);
-  const file = await captureBackup((r, o) => sessionRequest(d, r, o), d.info.version, backupProgress);
-  assertSession(d);
-  download(`Skiff-backup-${new Date().toISOString().slice(0, 10)}.json`, file);
-  sayK("backupDone");
-}));
-$("backup-import").addEventListener("click", () => { if (dev?.info?.backupCaps & 2) $("backup-file").click(); });
 $("backup-file").addEventListener("change", () => {
   const file = $("backup-file").files[0], d = dev; $("backup-file").value = "";
   if (!file || !(d?.info?.backupCaps & 2)) return;
   op(async () => {
     if (file.size > 600000) throw new Error("Backup file too large");
     const { readBackup, restoreBackup } = await backupModule();
-    let archive = readBackup(await file.text()), say = "", only = null; assertSession(d);
-    if (d.info.song2) {                              /* ((2.0, Tier B 10) a unit of 2.0: what it can't read, converted first */
-      const { loadConverter } = await import("./conv/conv.js");
-      const r = (await loadConverter(new URL("conv/conv.wasm", location.href).href)).convert(archive);
-      const bad = r.report.filter((x) => x.what.startsWith("refused")).map((x) => x.id);
-      assertSession(d);
-      if (r.writeBack.length || r.report.some((x) => x.what !== "kept" || x.note)) {
-        archive = r.archive; say = t("backupConvert").replace("{list}", convLines(r.report)) + "\n\n";
-      }
-      if (bad.length) only = archive.objects.map((o) => o.id).filter((id) => !bad.includes(id));   /* (a damaged one: the
-                                                     unit refuses it too, so it is left out, not the restore stopped) */
-    }
-    if (!confirm(say + t("backupConfirm"))) return;
-    await restoreBackup((r, o) => sessionRequest(d, r, o), archive, backupProgress, only);
+    const archive = readBackup(await file.text()); assertSession(d);
+    if (!confirm(t("backupConfirm"))) return;
+    await restoreBackup((r, o) => sessionRequest(d, r, o), archive, backupProgress);
     await load(d); sayK("backupRestored");
   });
 });

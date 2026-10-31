@@ -889,14 +889,6 @@ static int scenes_six(void)
     ok &= pool_refs(id) == 1u;
     pool_clear(id);
     ok &= str_eq(ui.msg, "IN USE") && pool_used(id);
-#if FELUCCA_LEGACY                                /* ((2.0) an SKF2: the converter's) */
-    memset(proj_slot, 0, sizeof proj_slot);
-    project_capture(&pj);
-    pj.ent[0][0][0] = (uint8_t)(id + 1u);         /* (T1's entry A naming it, in an SKF2) */
-    ok &= proj_pack2(&proj_slot[2], &pj, &PROJ_SKF2) && pool_refs(id) == 1u;
-    pool_clear(id);
-    ok &= str_eq(ui.msg, "IN USE") && pool_used(id);
-#endif
     bad += check("  a pattern a saved project names (the last track's list in its format; T1's in an SKF2): IN USE", ok);
     return bad;
 }
@@ -1367,102 +1359,12 @@ static int song_rest(void)
     return bad;
 }
 
-/* ---- (phase 5) projects of before SKF2 (bank.c proj_migrate): their tracks pool patterns, SKF2 ---- */
 static uint32_t pool_count(void)
 {
     uint32_t id, n = 0;
     for (id = 0; id < BK_POOL; id++)
         n += (uint32_t)pool_used(id);
     return n;
-}
-static int migrate(void)
-{
-#if !FELUCCA_LEGACY
-    return 0;                                     /* ((2.0) the converter's: run_tests.sh's FELUCCA_LEGACY build runs it) */
-#else
-    int bad = 0, ok, n;
-    uint32_t k, cuts = 0;
-    static uint8_t before[sizeof nor];
-    static project_t pj, got;
-    static project_store_t w, ref;
-    static uint8_t r[BK_REC];
-    snap_t a[NTRK], b;
-    fresh();
-    rich(0, 5);                                   /* T1 every field; T2 the same pattern (on its own track); T3 empty; */
-    rich(1, 5);                                   /* T4 8 steps */
-    simple(3, 50, 8, DIR_FWD);
-    for (k = 0; k < NTRK; k++)
-        snap(&a[k], k);
-    project_capture(&pj);
-    ok = proj_pack(&w, &pj) && !st_save(OBJ_PROJECT0, &w, sizeof w) && !st_save(OBJ_PROJECT0 + 2u, &w, sizeof w) &&
-         !st_save(OBJ_AUTOSAVE, &w, sizeof w);    /* (SKF1: slots A and C, the autosave) */
-    memcpy(before, nor, sizeof nor);
-    ok &= proj_migrate(0) == 0 && !pool_count();
-    bad += check("migrate: not after a crash, a hang or a failed boot (nothing written)", ok);
-    ok = proj_migrate(1) == 1 && pool_count() == 2u;
-    for (k = 0; k < 5u; k++) {
-        uint32_t obj = k < 4u ? OBJ_PROJECT0 + k : OBJ_AUTOSAVE;
-        n = st_load(obj, &w, sizeof w);
-        if (k == 1u || k == 3u) {
-            ok &= n <= 0;                         /* (empty slots: none) */
-            continue;
-        }
-        ok &= n == (int)PROJ_SKF->size && proj_import(&got, &w, n) && got.ent[0][0][0] && got.ent[1][0][0] == got.ent[0][0][0] &&
-              !got.ent[2][0][0] && got.ent[3][0][0] && got.ent[3][0][0] != got.ent[0][0][0] && !got.cur[0] && !got.ent[0][1][0];
-    }
-    ok &= proj_migrate(1) == 0;                   /* (again: all SKF2 (SKF3 with six tracks), nothing to do) */
-    bad += check("  slots A C and the autosave: SKF2 (SKF3), each track's entry A its pattern (T1 T2 one, shared), T3 none",
-                 ok);
-    favorite_set(ENGI_DRUMX, 0, 1);               /* ((Skiff phase 7) row 14 is DRUM-X's favourites) */
-    ok = proj_migrate(1) == 0 && favorite_has(ENGI_DRUMX, 0);
-    favorite_set(ENGI_DRUMX, 0, 0);
-    bad += check("  a DRUM-X favourite (row 14) stays", ok);
-    for (k = 0; k < NTRK; k++)
-        detach(k);
-    project_load(0);
-    ok = 1;
-    for (k = 0; k < NTRK; k++) {
-        snap(&b, k);
-        ok &= same(&a[k], &b);
-    }
-    bad += check("  the same music: every track's steps, timing, automation and locks as before", ok);
-    st_load(OBJ_PROJECT0, &ref, sizeof ref);
-    ok = 1;
-    for (n = 0; n < 400; n++) {                   /* the power goes after n writes (each page, each commit) */
-        memcpy(nor, before, sizeof nor);
-        power_cycle();
-        fail_after = n;
-        proj_migrate(1);
-        k = fail_after > 0;                       /* (it ended before the cut: done) */
-        cuts += !k;
-        fail_after = -1;
-        power_cycle();
-        proj_migrate(1);                          /* (the next boot) */
-        ok &= st_load(OBJ_PROJECT0, &w, sizeof w) == (int)PROJ_SKF->size && !memcmp(&w, &ref, PROJ_SKF->size) &&
-              pool_count() == 2u && st_load(OBJ_AUTOSAVE, &w, sizeof w) == (int)PROJ_SKF->size;
-        if (k)
-            break;
-    }
-    bad += check("  a power cut after any write: the next boot ends it the same (the same patterns, none twice)",
-                 ok && cuts > 10u && n < 400);
-    memcpy(nor, before, sizeof nor);
-    power_cycle();
-    for (k = 0; k < NTRK; k++)
-        detach(k);
-    ok = bk_pack(r, &trk[2]);                     /* (an empty track's pattern: none of the project's) */
-    for (k = 0; k < BK_POOL; k++)
-        ok &= pool_put(k, r) == 0;
-    ok &= proj_migrate(1) == 0 && st_load(OBJ_PROJECT0, &w, sizeof w) == (int)sizeof w;
-    memset(proj_slot, 0, sizeof proj_slot);       /* (the RAM copies lost: from flash) */
-    proj_fetch(0);
-    project_load(0);
-    for (k = 0; k < NTRK; k++) {
-        snap(&b, k);
-        ok &= same(&a[k], &b);
-    }
-    bad += check("  the pool full: the projects as they were (SKF1), loading with their own steps", ok);
-    return bad;
-#endif
 }
 
 /* ---- (Skiff phase 7) the DRUM-X kit is the project's: saved with it (SKF3), back when loaded, the factory's for a project
@@ -1650,7 +1552,7 @@ int main(void)
 {
     int bad = layout() + fidelity() + keep() + entries() + staged_all() + last_track() + torn() + wear_and_wrap() +
               playing() + live() + scenes() + scenes_six() + song_test() + song_six() + song_rest() + song_once() +
-              song_chain() + song_sound() + song_same() + song_next_edit() + migrate() + dx_kit_project();
+              song_chain() + song_sound() + song_same() + song_next_edit() + dx_kit_project();
     printf("%s\n", bad ? "BANK TEST FAILED" : "pattern bank tests passed");
     return bad != 0;
 }

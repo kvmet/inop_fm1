@@ -1677,7 +1677,7 @@ static void act_do(void)
             up_ui(c - 1u, ui.uslot);
         else if (transport_busy())
             ui_message("STOP TO SAVE");
-        else if (up_used(ui.uslot) || up_old(ui.uslot))     /* ((2.0) an OLD FORMAT one asks too) */
+        else if (up_used(ui.uslot))
             confirm_open(CF_OVR_USER, ui.uslot);
         else
             name_open(NK_USER_SAVE, ui.uslot);
@@ -2094,11 +2094,6 @@ static void ui_input(void)
     clock_wait_poll();                                  /* (PLAY on an external clock that sends nothing: say so) */
     bank_poll();                                        /* (Skiff) a pattern switched in live: what went out kept */
     song_poll();                                        /* (Skiff phase 5) SONG: each track's next entry staged */
-#if !FELUCCA_FM4 && FELUCCA_LEGACY
-    for (k = 0; k < NTRK; k++)                          /* a DIGITAL sound any other way (the paths convert it */
-        if (trk[k].eng_req == ENGI_DIGITAL)             /* already): FM6 (fm4_convert.c) */
-            fm4_track(&trk[k]);
-#endif
     perf_latch_on = ui.lock == LAYER_FX;                /* ((Skiff U2) a locked FX layer latches: MENU > FX LATCH retired) */
     fx_usb_fixed = (ui_prefs & PREF_USB_FIXED) != 0u;   /* (MENU > USB LEVEL: fx.c, audio.c) */
     rp_apply();                                         /* (MENU > CLICK, CLICK LEVEL, COUNT-IN: click.c, seq.c) */
