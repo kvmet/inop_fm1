@@ -717,6 +717,13 @@ static char *put_int(char *s, int32_t v)
     return s;
 }
 
+static char *put_two_digits(char *s, uint32_t v)
+{
+    if (v < 10u)
+        *s++ = '0';
+    return put_int(s, (int32_t)v);
+}
+
 /* SPI runs at 12 MHz, so a full-width text line blocks the main loop for about 6 ms. Only changed text is sent. */
 enum { LINE_DUB, LINE_HEAD, LINE_COUNTER, LINE_BPM, LINE_STATUS, LINE_DROP, LINE_HINT, LINE_SOUND, LINE_LABEL, LINE_VALUE = LINE_LABEL + NKNOB, LINE_COUNT = LINE_VALUE + NKNOB };
 #define LINE_CHARS 48u
@@ -910,11 +917,11 @@ static void draw_counter(void)
     char b[48];
     char *s = put_text(b, "STOP");
     if (seq.run != SEQ_STOPPED) {
-        s = put_int(b, seq.plays + 1);
+        s = put_two_digits(b, seq.plays + 1u);
         s = put_text(s, ".");
-        put_int(s, (int32_t)seq.count + 1);
+        put_two_digits(s, seq.count + 1u);
     }
-    ui_text(LINE_COUNTER, 161, 1, 38, &AF_M, b, T_TEXT, ALIGN_CENTER);
+    ui_text(LINE_COUNTER, 161, 1, 38, &AF_M, b, T_TEXT, ALIGN_RIGHT);
 }
 
 /* polled while the main loop waits, so the playhead and counter move on the step and not on the next frame */
@@ -1420,13 +1427,6 @@ static void draw_title(const page_t *pg)
     draw_counter();
     put_int(b, (int32_t)ui.bpm);
     ui_text(LINE_BPM, 199, 1, 38, &AF_M, b, T_TEXT, ALIGN_RIGHT);
-}
-
-static char *put_two_digits(char *s, uint32_t v)
-{
-    if (v < 10u)
-        *s++ = '0';
-    return put_int(s, (int32_t)v);
 }
 
 /* a drop is a lost note: the field stays visible and flashes on a new one. The count wraps */

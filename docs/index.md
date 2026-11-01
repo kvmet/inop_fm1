@@ -134,7 +134,7 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 ## Screen
 
 - **Layout:** 1 px borders mark each area. Top to bottom: title bar 20 px, knob squares 47 px, free space 72 px, sequence 79 px, bottom row 16 px.
-- **Title bar:** mode, page, track, pattern, counter and BPM. `P3>1` means pattern 3 is shown and pattern 1 plays. The counter `48.15` means the 48th play and step 15 of the playing pattern. One play ends when the pattern's longest track completes. The play number wraps from 64 to 1 and starts at 1 when a committed pattern starts.
+- **Title bar:** mode, page, track, pattern, counter and BPM. `P3>1` means pattern 3 is shown and pattern 1 plays. The counter `48.05` means the 48th play and step 5 of the playing pattern, always with 2 digits each. One play ends when the pattern's longest track completes. The play number wraps from 64 to 1 and starts at 1 when a committed pattern starts.
 - **Knob squares:** row 1 is SEL and knobs 1 to 4, as on the panel, with each name over its value. Row 2 is ALGO, under SEL.
 - **Sound square:** under ALGO. `S12 x3` means the knobs edit sound 12, and 3 tracks across all patterns use it, so all 3 hear a change.
 - **Free space:** to the right of ALGO and the sound square. The page sets what it shows. A sound copy prompt replaces it while it is active.
