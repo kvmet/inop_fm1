@@ -80,6 +80,7 @@ static struct {
     uint8_t dub, dub_prev_play;  /* overdub on, and the keys' state to return to */
     uint8_t play_used;           /* this PLAY press already acted: its release must not toggle the keys */
     uint32_t bpm, rec_t0, held_keys, track_t0;
+    uint32_t drop_seen, drop_t0;
 } ui;
 enum { SOUND_COPY_NONE, SOUND_COPY_CHOOSE, SOUND_COPY_CONFIRM };
 
@@ -167,9 +168,9 @@ static const char *const NAMES_ALG[FM_ALGS] = {"1", "2", "3", "4", "5", "6", "7"
 static const char *const NAMES_RATIO[FM_RATIOS] = {"1/4", "1/2", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14", "16"};
 static const char *const LABELS_FM[7] = {"RATIO C", "RATIO A", "RATIO B", "INDEX A", "INDEX B", "FEEDBK", "DETUNE"};
 static const char *const NAMES_SWARM[SWARM_MODES] = {"SAME", "OCTS"};
-static const char *const LABELS_SWARM[7] = {"DETUNE", "SHAPE", "SYNC", "SIDES", "SUB", "DRIFT", "--"};
+static const char *const LABELS_SWARM[7] = {"DETUNE", "SHAPE", "SYNC", "SIDES", "SUB", "DRIFT", ""};
 static const char *const NAMES_PERC[PERC_MODES] = {"TONE", "SKIN", "BAR", "METAL"};
-static const char *const LABELS_PERC[7] = {"FM", "SPREAD", "HARM", "BEND", "NOISE", "CLICK", "--"};
+static const char *const LABELS_PERC[7] = {"FM", "SPREAD", "HARM", "BEND", "NOISE", "CLICK", ""};
 
 static int ui_engine(void) { return clamp(ui_value(PV_ENGINE), 0, ENGINES - 1); }
 
@@ -572,7 +573,7 @@ static void ui_input(void)
     pg = ui_page();
     for (k = 0; k < NKNOB; k++) {
         d = fm1_enc_take(KNOB_ENC[k]);
-        if (d && pg->id[k] != ID_NONE) {
+        if (d && ui_label(pg, k)[0]) {
             int32_t count;
             uint32_t id = page_id(pg, k);
             ui_knob(id, value_names(id, &count) ? d : d * shift);   /* a selector's short list would jump to its end */
@@ -648,7 +649,7 @@ static char *put_int(char *s, int32_t v)
 }
 
 /* SPI runs at 12 MHz, so a full-width text line blocks the main loop for about 6 ms. Only changed text is sent. */
-enum { LINE_DUB, LINE_HEAD, LINE_COUNTER, LINE_BPM, LINE_STATUS, LINE_HINT, LINE_LABEL, LINE_VALUE = LINE_LABEL + NKNOB, LINE_COUNT = LINE_VALUE + NKNOB };
+enum { LINE_DUB, LINE_HEAD, LINE_COUNTER, LINE_BPM, LINE_STATUS, LINE_DROP, LINE_HINT, LINE_SOUND, LINE_LABEL, LINE_VALUE = LINE_LABEL + NKNOB, LINE_COUNT = LINE_VALUE + NKNOB };
 #define LINE_CHARS 48u
 static struct { char text[LINE_CHARS]; uint16_t ink; } line_drawn[LINE_COUNT];
 
@@ -675,7 +676,9 @@ static void ui_text(uint32_t slot, uint32_t x, uint32_t y, uint32_t w, const aaf
 #define TITLE_W 158u
 #define DUB_W 27u
 #define KNOB_RULE_Y 69u
-#define GRID_RULE_Y 117u
+#define SOUND_RULE_Y 117u
+#define SOUND_TEXT_Y 122u
+#define GRID_RULE_Y 142u
 #define BOTTOM_RULE_Y 222u
 #define KNOB_PITCH 48u
 #define KNOB_LABEL_DY 4u
@@ -683,14 +686,16 @@ static void ui_text(uint32_t slot, uint32_t x, uint32_t y, uint32_t w, const aaf
 #define FREE_X 49u
 #define FREE_Y 70u
 #define FREE_W 190u
-#define FREE_H 47u
+#define FREE_H 72u
 #define BOTTOM_Y 223u
-#define GRID_Y 119u
-#define GRID_ROW 17u
-#define GRID_TRIG_H 11u          /* in each row: the step's square, then the playhead's lane, then the view bar */
-#define GRID_PLAY_Y 12u
+#define STATUS_X 96u
+#define DROP_W 23u
+#define DROP_FLASH_MS 1000u
+#define GRID_Y 144u
+#define GRID_ROW 13u
+#define GRID_TRIG_H 9u           /* in each row: the step's square, then the lane of the playhead and the view bar */
+#define GRID_PLAY_Y 10u
 #define GRID_PLAY_H 2u
-#define GRID_VIEW_Y 15u
 #define GRID_DOT 5u
 #define GRID_X 15u
 #define GRID_W 224u
@@ -732,19 +737,51 @@ static void grid_square(uint32_t x, uint32_t y, uint32_t w, uint32_t state)
     }
 }
 
+/* the playhead fills the lane. Under it, the selected track's lane has a line over the steps the white keys reach */
+static void grid_lane(uint32_t k, uint32_t i, uint32_t play)
+{
+    uint32_t x = GRID_X + i * grid.width, y = GRID_Y + k * GRID_ROW + GRID_PLAY_Y, w = grid.width - 1u;
+    uint32_t in_view = k == grid.bar_track && i >= grid.bar_first && i < grid.bar_end;
+    lcd_fill(x, y, w, GRID_PLAY_H - 1u, play ? T_ACCENT : T_BG);
+    lcd_fill(x, y + GRID_PLAY_H - 1u, w, 1, play ? T_ACCENT : in_view ? T_MID : T_BG);
+}
+
 /* a playhead move sends only the lane: it is most of what changes on each step */
 static void grid_cell(uint32_t k, uint32_t i, uint32_t state, uint32_t old)
 {
-    uint32_t x = GRID_X + i * grid.width, y = GRID_Y + k * GRID_ROW, w = grid.width - 1u;
     if ((state ^ old) & (CELL_BASE | CELL_LOCKED))
-        grid_square(x, y, w, state);
+        grid_square(GRID_X + i * grid.width, GRID_Y + k * GRID_ROW, grid.width - 1u, state);
     if ((state ^ old) & CELL_PLAY)
-        lcd_fill(x, y + GRID_PLAY_Y, w, GRID_PLAY_H, state & CELL_PLAY ? T_ACCENT : T_BG);
+        grid_lane(k, i, state & CELL_PLAY);
 }
 
-static void grid_bar(uint32_t k, uint32_t first, uint32_t end, uint16_t ink)
+/* the track rows and the FM chart's boxes are too short for the UI fonts */
+static void cv_glyph(int32_t x, int32_t y, const uint8_t rows[7], uint16_t ink)
 {
-    lcd_fill(GRID_X + first * grid.width, GRID_Y + k * GRID_ROW + GRID_VIEW_Y, (end - first) * grid.width - 1u, 1, ink);
+    int32_t row, col;
+    for (row = 0; row < 7; row++)
+        for (col = 0; col < 5; col++)
+            if (rows[row] >> (4 - col) & 1)
+                cv_rect(x + col, y + row, 1, 1, ink);
+}
+
+static void draw_track_numbers(void)
+{
+    static const uint8_t DIGIT[NTRK][7] = {
+        {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},
+        {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},
+        {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},
+        {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02},
+        {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
+        {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E},
+    };
+    uint32_t k;
+    for (k = 0; k < NTRK; k++) {
+        cv_begin(GRID_X - 2u, GRID_TRIG_H, k == ui.track ? T_ACCENT : T_BG);
+        cv_glyph(((int32_t)GRID_X - 2 - 5) / 2, (GRID_TRIG_H - 7) / 2, DIGIT[k], k == ui.track ? T_BG : T_MID);
+        cv_blit(1, GRID_Y + k * GRID_ROW);
+    }
+    lcd_sync();
 }
 
 /* one row per track, at one step width so tracks of different lengths line up as they play. Only cells that changed are
@@ -764,10 +801,7 @@ static void draw_grid(void)
                 grid.cell[k][i] = CELL_NONE;             /* the fill above drew exactly this */
     }
     if (grid.track != ui.track) {
-        for (k = 0; k < NTRK; k++) {
-            char label[2] = {(char)('1' + k), 0};
-            draw_text_line(1, GRID_Y + k * GRID_ROW - 1u, GRID_X - 1u, &AF_S, label, k == ui.track ? T_BG : T_MID, k == ui.track ? T_ACCENT : T_BG, 1);
-        }
+        draw_track_numbers();
         grid.track = ui.track;
     }
     for (k = 0; k < NTRK; k++) {
@@ -791,12 +825,14 @@ static void draw_grid(void)
     first = ui.view * 16u;                       /* the steps the white keys reach */
     end = first + 16u < sel->length ? first + 16u : sel->length;
     if (grid.bar_track != ui.track || grid.bar_first != first || grid.bar_end != end) {
-        if (grid.bar_track != NO_TRACK)
-            grid_bar(grid.bar_track, grid.bar_first, grid.bar_end, T_BG);
-        grid_bar(ui.track, first, end, T_MID);
+        uint32_t old_track = grid.bar_track, old_first = grid.bar_first, old_end = grid.bar_end;
         grid.bar_track = ui.track;
         grid.bar_first = (uint8_t)first;
         grid.bar_end = (uint8_t)end;
+        for (i = old_first; old_track != NO_TRACK && i < old_end; i++)
+            grid_lane(old_track, i, grid.cell[old_track][i] & CELL_PLAY);
+        for (i = first; i < end; i++)
+            grid_lane(ui.track, i, grid.cell[ui.track][i] & CELL_PLAY);
     }
 }
 
@@ -822,9 +858,6 @@ static void value_text(char *b, uint32_t id)
 {
     int32_t count;
     const char *const *names;
-    b[0] = 0;
-    if (id == ID_NONE)
-        return;
     names = value_names(id, &count);
     if (names)
         put_text(b, names[clamp(ui_value(id), 0, count - 1)]);
@@ -848,6 +881,7 @@ static void draw_frame(void)
     for (k = 1; k < 5u; k++)
         lcd_fill(k * KNOB_PITCH, TITLE_RULE_Y, 1, KNOB_RULE_Y - TITLE_RULE_Y, T_MID);
     lcd_fill(KNOB_PITCH, KNOB_RULE_Y, 1, GRID_RULE_Y - KNOB_RULE_Y, T_MID);
+    lcd_fill(0, SOUND_RULE_Y, KNOB_PITCH, 1, T_MID);
 }
 
 /* each knob's square: row 1 is SEL and knobs 1 to 4, row 2 is ALGO */
@@ -858,10 +892,25 @@ static void draw_knobs(const page_t *pg)
     for (k = 0; k < NKNOB; k++) {
         uint32_t x = (k < 5u ? k * KNOB_PITCH : 0u) + 1u, y = (k < 5u ? TITLE_RULE_Y : KNOB_RULE_Y) + 1u;
         uint32_t w = (k == 4u ? SCREEN_EDGE : x + KNOB_PITCH - 1u) - x;
-        ui_text(LINE_LABEL + k, x, y + KNOB_LABEL_DY, w, &AF_S, ui_label(pg, k), T_MID, ALIGN_CENTER);
-        value_text(b, page_id(pg, k));
+        const char *label = ui_label(pg, k);
+        ui_text(LINE_LABEL + k, x, y + KNOB_LABEL_DY, w, &AF_S, label, T_MID, ALIGN_CENTER);
+        b[0] = 0;
+        if (label[0])
+            value_text(b, page_id(pg, k));
         ui_text(LINE_VALUE + k, x, y + KNOB_VALUE_DY, w, &AF_M, b, T_TEXT, ALIGN_CENTER);
     }
+}
+
+/* the sound the knobs edit, and how many tracks hear a change to it */
+static void draw_sound(const track_pat_t *t)
+{
+    char b[48], *s;
+    uint32_t sound = held_first && held_first->t->steps[held_first->step].sound != SOUND_NONE ? held_first->t->steps[held_first->step].sound : t->base;
+    s = put_text(b, "S");
+    s = put_int(s, (int32_t)sound + 1);
+    s = put_text(s, " x");
+    put_int(s, (int32_t)sound_use_count(patterns, NPATTERN, sound));
+    ui_text(LINE_SOUND, 1, SOUND_TEXT_Y, KNOB_PITCH - 1u, &AF_S, b, T_TEXT, ALIGN_CENTER);
 }
 
 /* the free space. These draw on a canvas that the caller sends whole: 12 ms, so only when what it shows has changed */
@@ -872,12 +921,12 @@ static void free_copy_prompt(const track_pat_t *t)
     s = put_int(s, t->base + 1);
     s = put_text(s, " > ");
     put_int(s, ui.sound_to + 1);
-    cv_text(4, 0, &AF_M, b, T_ACCENT);
+    cv_text(4, 6, &AF_M, b, T_ACCENT);
     s = put_int(b, (int32_t)sound_use_count(patterns, NPATTERN, ui.sound_to));
     s = put_text(s, " TRACKS USE ");
     put_int(s, ui.sound_to + 1);
-    cv_text(4, 18, &AF_S, b, T_TEXT);
-    cv_text(4, 31, &AF_S, ui.sound_copy == SOUND_COPY_CONFIRM ? "REC: COPY. OTHER: CANCEL" : "RELEASE REC TO CONFIRM", T_ACCENT);
+    cv_text(4, 30, &AF_S, b, T_TEXT);
+    cv_text(4, 48, &AF_S, ui.sound_copy == SOUND_COPY_CONFIRM ? "REC: COPY. OTHER: CANCEL" : "RELEASE REC TO CONFIRM", T_ACCENT);
 }
 
 static void free_routes(const pkt_t *p)
@@ -894,7 +943,7 @@ static void free_routes(const pkt_t *p)
         s = put_text(s, NAMES_DST[dst]);
         s = put_text(s, amt < 0 ? " " : " +");
         put_int(s, amt);
-        cv_text(4 + (int32_t)(i & 1u) * 95, 8 + (int32_t)(i >> 1) * 16, &AF_S, b, i == ui.slot ? T_TEXT : T_MID);
+        cv_text(4, 1 + (int32_t)i * 16, &AF_S, b, i == ui.slot ? T_TEXT : T_MID);
     }
 }
 
@@ -914,22 +963,29 @@ static void free_voices(void)
         s = put_us(s, VARIANTS[k], cost_alone[k]);
         s = put_us(s, "/", cost_shared[k]);
     }
-    cv_text(4, 0, &AF_S, b, T_TEXT);
+    cv_text(4, 1, &AF_S, b, T_TEXT);
     s = put_us(b, "FLT ", cost_effect[COST_FILTER]);
     s = put_us(s, " SHP ", cost_effect[COST_SHAPER]);
     s = put_us(s, " DRV ", cost_effect[COST_DRIVE]);
     s = put_us(s, " CR ", cost_effect[COST_CRUSH]);
     put_us(s, " RT ", cost_effect[COST_RATE]);
-    cv_text(4, 16, &AF_S, b, T_TEXT);
+    cv_text(4, 17, &AF_S, b, T_TEXT);
     s = put_us(b, "DLY ", cost_delay);
     s = put_us(s, " REV ", cost_reverb);
     s = put_us(s, " MST ", cost_master);
     put_us(s, " BUD ", voice_budget);
-    cv_text(4, 31, &AF_S, b, T_MID);
+    cv_text(4, 33, &AF_S, b, T_MID);
+    s = put_text(b, "LATE ");
+    s = put_int(s, (int32_t)audio_late);
+    s = put_text(s, " STOLEN ");
+    s = put_int(s, (int32_t)voices_stolen);
+    s = put_text(s, " DROP ");
+    put_int(s, (int32_t)voices_dropped);
+    cv_text(4, 49, &AF_S, b, T_MID);
 }
 
 #define CURVE_TOP 3
-#define CURVE_H 41
+#define CURVE_H 62
 #define CURVE_HOLD_W 30u
 #define CURVE_W (FREE_W - 8u - CURVE_HOLD_W)
 static int32_t curve_y(uint32_t y) { return CURVE_TOP + CURVE_H - (int32_t)y * CURVE_H / 128; }
@@ -961,29 +1017,21 @@ static void free_lfo(int32_t shape, int32_t start)
 }
 
 #define CHART_PITCH_X 30
-#define CHART_PITCH_Y 11
+#define CHART_PITCH_Y 15
 #define CHART_BOX_W 22
-#define CHART_BOX_H 9
-#define CHART_BOTTOM 41          /* the bottom row's last line; the output line is under it */
+#define CHART_BOX_H 13
+#define CHART_BOTTOM 62          /* the bottom row's last line; the output line is under it */
 #define FM_OP_COL(c) ((c) & 15)
 #define FM_OP_ROW(c) ((c) >> 4)
 static int32_t chart_y(uint32_t cell) { return CHART_BOTTOM + 1 - CHART_BOX_H - FM_OP_ROW(cell) * CHART_PITCH_Y; }
 
-/* a 5 by 7 letter: the boxes are too short for the UI fonts. C, A or B, as the ratio knob that sets the operator */
-static void chart_letter(int32_t x, int32_t y, uint32_t op, uint16_t ink)
-{
-    static const uint8_t LETTER[FM_OPS][7] = {
-        {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},
-        {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},
-        {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
-        {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
-    };
-    int32_t row, col;
-    for (row = 0; row < 7; row++)
-        for (col = 0; col < 5; col++)
-            if (LETTER[op][row] >> (4 - col) & 1)
-                cv_rect(x + col, y + row, 1, 1, ink);
-}
+/* C, A or B, as the ratio knob that sets the operator */
+static const uint8_t CHART_LETTER[FM_OPS][7] = {
+    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},
+    {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
+    {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
+};
 
 /* a carrier is solid and a modulator is an outline: the palette's colours can all be equal */
 static void free_fm_chart(const pkt_t *p)
@@ -1005,7 +1053,7 @@ static void free_fm_chart(const pkt_t *p)
         cv_rect(x, y, CHART_BOX_W, CHART_BOX_H, T_THEME);
         if (!carrier)
             cv_rect(x + 1, y + 1, CHART_BOX_W - 2, CHART_BOX_H - 2, T_BG);
-        chart_letter(x + (CHART_BOX_W - 5) / 2, y + 1, i, carrier ? T_BG : T_THEME);
+        cv_glyph(x + (CHART_BOX_W - 5) / 2, y + (CHART_BOX_H - 7) / 2, CHART_LETTER[i], carrier ? T_BG : T_THEME);
         for (j = 0; j < FM_OPS; j++)
             if (FM_ROUTES[alg][i] >> j & 1u) {
                 int32_t tx = x + CHART_BOX_W / 2, sx = left + FM_OP_COL(CELL[alg][j]) * CHART_PITCH_X + CHART_BOX_W / 2, sy = chart_y(CELL[alg][j]) + CHART_BOX_H;
@@ -1026,7 +1074,7 @@ static void free_fm_chart(const pkt_t *p)
  * height for SIDES. Under them, a bar that widens with SUB */
 static void free_swarm(const pkt_t *p)
 {
-    enum { WAVE_TOP = 3, WAVE_H = 18, ROW_Y = 24, ROW_H = 5, TICK_H = 4, SUB_Y = 40, SUB_H = 2 };
+    enum { WAVE_TOP = 3, WAVE_H = 34, ROW_Y = 40, ROW_H = 7, TICK_H = 6, SUB_Y = 62, SUB_H = 3 };
     int32_t x, py = 0, morph, w = (int32_t)FREE_W - 8, spread = clamp(p->v[PV_E1], 0, 127), amount = spread * spread * 32767 / 16129;
     int32_t mix = clamp(p->v[PV_E4], 0, 127), sub_w = clamp(p->v[PV_E5], 0, 127) * w / 127;
     uint32_t width, cycle = 0xFFFFFFFFu / (uint32_t)w, restarts = (uint32_t)(256 + clamp(p->v[PV_E3], 0, 127) * 6), mode = swarm_mode(p->v[PV_E0]), i;
@@ -1051,7 +1099,7 @@ static void free_swarm(const pkt_t *p)
 /* one cycle of the wave as WAVE and WARP set it, over a tick for each of the table's frames */
 static void free_wave(const pkt_t *p)
 {
-    enum { WAVE_TOP = 3, WAVE_H = 30, TICK_Y = 37, TICK_H = 5 };
+    enum { WAVE_TOP = 3, WAVE_H = 52, TICK_Y = 59, TICK_H = 6 };
     const int16_t (*frames)[sizeof WAVE_DATA[0][0] / sizeof(int16_t)] = WAVE_DATA[wave_table(p->v[PV_E0])];
     wave_voice_t W;
     int32_t x, py = 0, w = (int32_t)FREE_W - 8, position = wave_position(p->v[PV_E1]), mix = (position >> 1) & 0x7FFF;
@@ -1085,8 +1133,8 @@ static void free_perc(const pkt_t *p)
 
 #define METER_X (FREE_X + 26u)
 #define METER_W 160u
-#define METER_ROW_Y(i) (FREE_Y + 3u + (i) * 11u)
-#define METER_H 8u
+#define METER_ROW_Y(i) (FREE_Y + 3u + (i) * 17u)
+#define METER_H 14u
 #define METER_FALL 6u            /* px per screen draw */
 static uint8_t meter_drawn[METERS];
 
@@ -1095,7 +1143,7 @@ static void free_meter_labels(void)
     static const char *const LABELS[METERS] = {"L", "R", "DLY", "REV"};
     uint32_t i;
     for (i = 0; i < METERS; i++) {
-        cv_text(4, (int32_t)(METER_ROW_Y(i) - FREE_Y) - 4, &AF_S, LABELS[i], T_MID);
+        cv_text(4, (int32_t)(METER_ROW_Y(i) - FREE_Y) - 1, &AF_S, LABELS[i], T_MID);
         meter_drawn[i] = 0;
     }
 }
@@ -1120,11 +1168,10 @@ static void draw_meters(void)
 
 static uint32_t hash_mix(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 
-/* the pages whose drawing reads the packet redraw when it changes */
 /* one segment per page of the group, along the free space's lower edge. The shown page's is solid and the others are a line */
 static void free_page_tabs(const page_t *pg)
 {
-    enum { TAB_Y = 44, TAB_H = 3, TAB_GAP = 4 };
+    enum { TAB_Y = 68, TAB_H = 3, TAB_GAP = 4 };
     const page_group_t *g = &GROUPS[ui.group];
     uint32_t shown = ui.group_page[ui.group], i;
     int32_t w;
@@ -1140,6 +1187,7 @@ static void free_page_tabs(const page_t *pg)
     }
 }
 
+/* the pages whose drawing reads the packet redraw when it changes */
 static int free_reads_packet(const page_t *pg)
 {
     return pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
@@ -1209,7 +1257,7 @@ static void draw_dub_word(void)
     draw_text_line(TITLE_X, 1, DUB_W, &AF_M, "DUB", ink, ink == T_BG ? T_TEXT : T_BG, ALIGN_CENTER);
 }
 
-static void draw_title(const page_t *pg, const track_pat_t *t)
+static void draw_title(const page_t *pg)
 {
     char b[48], *s;
     uint32_t head_x = ui.dub ? TITLE_X + DUB_W + 2u : TITLE_X;
@@ -1221,8 +1269,6 @@ static void draw_title(const page_t *pg, const track_pat_t *t)
     s = put_text(s, pg->name);
     s = put_text(s, " T");
     s = put_int(s, ui.track + 1);
-    s = put_text(s, " S");
-    s = put_int(s, t->base + 1);
     s = put_text(s, " P");
     s = put_int(s, ui.edit_pat + 1);
     if (ui.edit_pat != seq.playing) {
@@ -1235,14 +1281,42 @@ static void draw_title(const page_t *pg, const track_pat_t *t)
     ui_text(LINE_BPM, 199, 1, 38, &AF_M, b, T_TEXT, ALIGN_RIGHT);
 }
 
-/* the held step's values, or else the load and how often triggers lost out. The counts wrap: a change is the news */
+static char *put_two_digits(char *s, uint32_t v)
+{
+    if (v < 10u)
+        *s++ = '0';
+    return put_int(s, (int32_t)v);
+}
+
+/* a drop is a lost note: the field stays visible and flashes on a new one. The count wraps */
+static void draw_drops(void)
+{
+    char b[48];
+    uint32_t dropped = voices_dropped;
+    if (dropped != ui.drop_seen) {
+        ui.drop_seen = dropped;
+        ui.drop_t0 = fm1_ms;
+    }
+    put_two_digits(put_text(b, "D"), dropped % 100u);
+    ui_text(LINE_DROP, SCREEN_EDGE - DROP_W, BOTTOM_Y, DROP_W - 1u, &AF_S, b, ui.drop_t0 && fm1_ms - ui.drop_t0 < DROP_FLASH_MS ? T_ACCENT : T_MID, ALIGN_RIGHT);
+}
+
+/* fixed places and equal digit widths, so a field stays where the eye left it. A held step's values take the whole width */
 static void draw_status(void)
 {
     char b[48], *s;
     uint32_t k, others = 0;
+    if (!(ui.dub && dub.full) && !held_first) {
+        s = put_two_digits(put_text(b, "CPU "), audio_cpu_q8 * 100u / 256u);
+        put_two_digits(put_text(s, " V "), voices_active());
+        ui_text(LINE_STATUS, STATUS_X, BOTTOM_Y, SCREEN_EDGE - DROP_W - STATUS_X, &AF_S, b, T_MID, ALIGN_RIGHT);
+        draw_drops();
+        return;
+    }
+    line_drawn[LINE_DROP].text[0] = 0;
     if (ui.dub && dub.full) {
         put_text(b, "LOCKS FULL");
-    } else if (held_first) {
+    } else {
         const step_t *st = &held_first->t->steps[held_first->step];
         for (k = 0; k < NELEM(held); k++)
             others += held[k].t != 0;
@@ -1260,19 +1334,8 @@ static void draw_status(void)
             s = put_text(s, " LOCKS ");
             put_int(s, (int32_t)step_lock_count(held_first->t, held_first->step));
         }
-    } else {
-        s = put_text(b, "CPU");
-        s = put_int(s, (int32_t)(audio_cpu_q8 * 100u / 256u));
-        s = put_text(s, " V");
-        s = put_int(s, (int32_t)voices_active());
-        s = put_text(s, " L");
-        s = put_int(s, (int32_t)(audio_late % 100u));
-        s = put_text(s, " D");
-        s = put_int(s, (int32_t)(voices_dropped % 100u));
-        s = put_text(s, " S");
-        put_int(s, (int32_t)(voices_stolen % 100u));
     }
-    ui_text(LINE_STATUS, 96, BOTTOM_Y, 141, &AF_S, b, held_first || (ui.dub && dub.full) ? T_ACCENT : T_MID, ALIGN_RIGHT);
+    ui_text(LINE_STATUS, STATUS_X, BOTTOM_Y, SCREEN_EDGE - 2u - STATUS_X, &AF_S, b, T_ACCENT, ALIGN_RIGHT);
 }
 
 static void draw_hint(const track_pat_t *t)
@@ -1291,20 +1354,24 @@ static void draw_hint(const track_pat_t *t)
     ui_text(LINE_HINT, 3, BOTTOM_Y, 93, &AF_S, b, T_MID, ALIGN_LEFT);
 }
 
+/* reads the keys between areas: a whole frame can take 40 ms, and a key press must not wait for it */
 static void ui_draw(void)
 {
-    const track_pat_t *t = ui_track();
-    const page_t *pg = ui_page();
     if (!grid.frame_drawn) {
         draw_frame();
         grid.frame_drawn = 1;
     }
-    draw_title(pg, t);
+    draw_title(ui_page());
+    ui_input();
     draw_grid();
-    draw_knobs(pg);
-    draw_free(pg, t);
+    ui_input();
+    draw_knobs(ui_page());
+    draw_sound(ui_track());
+    ui_input();
+    draw_free(ui_page(), ui_track());
+    ui_input();
     draw_status();
-    draw_hint(t);
+    draw_hint(ui_track());
 }
 
 /* ratios: knob values. mod_d, mod_s: the MOD envelope, which sets how the index moves */
