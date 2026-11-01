@@ -173,6 +173,48 @@ static void packet_resolve(pkt_t *p, const sound_t *pool, const track_pat_t *t, 
         p->v[t->locks[i].id] = t->locks[i].value;
 }
 
+/* does this step set this value for itself? */
+static int step_value_locked(const track_pat_t *t, uint32_t step, uint32_t id)
+{
+    const step_t *s = &t->steps[step];
+    uint32_t at = lock_lower(t, step, id);
+    if (id == PV_NOTE)
+        return s->note != STEP_INHERIT;
+    if (id == PV_VEL)
+        return s->vel != STEP_INHERIT;
+    if (id == PV_LEN)
+        return s->len != STEP_INHERIT;
+    return at < t->nlock && t->locks[at].step == step && t->locks[at].id == id;
+}
+
+/* the trigger stays: the step plays the base sound again, every time */
+static void step_clear_locks(track_pat_t *t, uint32_t step)
+{
+    step_t *s = &t->steps[step];
+    lock_clear_step(t, step);
+    s->note = s->vel = s->len = STEP_INHERIT;
+    s->sound = SOUND_NONE;
+    s->chance = STEP_CHANCE_ALWAYS;
+}
+
+/* 0, or -1 when the lock memory filled before every lock was copied */
+static int step_copy(track_pat_t *t, uint32_t from, uint32_t to)
+{
+    uint32_t i, n;
+    int result = 0;
+    if (from == to)
+        return 0;
+    lock_clear_step(t, to);
+    t->steps[to] = t->steps[from];
+    n = step_lock_count(t, from);
+    for (i = 0; i < n; i++) {
+        lock_t l = t->locks[lock_lower(t, from, 0) + i];   /* a lock set on an earlier step moves the source */
+        if (lock_set(t, to, l.id, l.value))
+            result = -1;
+    }
+    return result;
+}
+
 /* tracks that reach this sound by their base or by a step's sound lock */
 static uint32_t sound_use_count(const pattern_t *pats, uint32_t npat, uint32_t sound)
 {

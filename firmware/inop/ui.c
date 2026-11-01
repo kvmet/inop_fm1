@@ -12,6 +12,7 @@ enum { E_SELECT = 0, E_ALGO = 1, E_PRESETS = 6, E_K1 = 2 };
 #define OCTAVE_MAX 3
 #define SLOTS 4u
 #define NKNOB 6u
+#define LOCKS_FULL_MS 1500u      /* how long the status line reports a lock that did not fit */
 #define DUB_STILL_MS 150u        /* with one step, the longest a knob can rest and keep writing */
 /* a page's values in screen order: row 1 is SEL and knobs 1 to 4, row 2 is ALGO */
 static const uint8_t KNOB_ENC[NKNOB] = {E_SELECT, E_K1, E_K1 + 1, E_K1 + 2, E_K1 + 3, E_ALGO};
@@ -88,7 +89,7 @@ static struct {
     uint8_t play_used;           /* this PLAY press already acted: its release must not toggle the keys */
     uint8_t rec_used;            /* this REC press already acted: its release is not a tap */
     uint32_t bpm, rec_t0, held_keys, track_t0;
-    uint32_t drop_seen, drop_t0;
+    uint32_t drop_seen, drop_t0, locks_full_t0;
 } ui;
 enum { SOUND_COPY_NONE, SOUND_COPY_CHOOSE, SOUND_COPY_CONFIRM };
 
@@ -255,7 +256,8 @@ static void held_knob(held_t *h, uint32_t id, int32_t delta)
     v = value_clamp(id, p.v[id] + delta);
     irq = irq_save();
     h->t->steps[h->step].on = 1;
-    (void)step_write(h->t, h->step, id, v);
+    if (step_write(h->t, h->step, id, v))
+        ui.locks_full_t0 = fm1_ms;
     irq_restore(irq);
     h->used = 1;
 }
@@ -384,14 +386,9 @@ static void held_sound(held_t *h, int32_t delta)
 
 static void copy_step(track_pat_t *t, uint32_t from, uint32_t to)
 {
-    uint32_t i, n;
     uint32_t irq = irq_save();
-    lock_clear_step(t, to);
-    t->steps[to] = t->steps[from];
-    n = t->nlock;
-    for (i = 0; i < n; i++)
-        if (t->locks[i].step == from)
-            (void)lock_set(t, to, t->locks[i].id, t->locks[i].value);
+    if (step_copy(t, from, to))
+        ui.locks_full_t0 = fm1_ms;
     irq_restore(irq);
 }
 
@@ -555,6 +552,18 @@ static void oct_button(int32_t dir)
         ui.view--;
 }
 
+static void held_clear_locks(void)
+{
+    uint32_t i;
+    for (i = 0; i < NELEM(held); i++)
+        if (held[i].t) {
+            uint32_t irq = irq_save();
+            step_clear_locks(held[i].t, held[i].step);
+            irq_restore(irq);
+            held[i].used = 1;
+        }
+}
+
 static void transport_toggle(void)
 {
     uint32_t irq = irq_save();
@@ -605,7 +614,8 @@ static void ui_input(void)
     if (edges >> B_REC & 1u) {
         ui.rec_t0 = fm1_ms;
         ui.copy_src = NO_KEY;
-        ui.rec_used = 0;
+        ui.rec_used = held_first != 0;
+        held_clear_locks();
     }
     for (k = 0; k < 27u; k++)
         if (pressed >> k & 1u) {
@@ -948,6 +958,16 @@ static void draw_frame(void)
     lcd_fill(0, SOUND_RULE_Y, KNOB_PITCH, 1, T_MID);
 }
 
+/* does the held step set this value for itself? */
+static int value_held_locked(uint32_t id)
+{
+    if (!held_first)
+        return 0;
+    if (id == ID_CHANCE)
+        return held_first->t->steps[held_first->step].chance != STEP_CHANCE_ALWAYS;
+    return id < PV_COUNT && step_value_locked(held_first->t, held_first->step, id);
+}
+
 /* each knob's square: row 1 is SEL and knobs 1 to 4, row 2 is ALGO */
 static void draw_knobs(const page_t *pg)
 {
@@ -961,7 +981,7 @@ static void draw_knobs(const page_t *pg)
         b[0] = 0;
         if (label[0])
             value_text(b, page_id(pg, k));
-        ui_text(LINE_VALUE + k, x, y + KNOB_VALUE_DY, w, &AF_M, b, T_TEXT, ALIGN_CENTER);
+        ui_text(LINE_VALUE + k, x, y + KNOB_VALUE_DY, w, &AF_M, b, value_held_locked(page_id(pg, k)) ? T_ACCENT : T_TEXT, ALIGN_CENTER);
     }
 }
 
@@ -1065,15 +1085,34 @@ static void free_envelope(int32_t a, int32_t d, int32_t sus, int32_t r)
         cv_line(4 + px[i - 1u], curve_y(py[i - 1u]), 4 + px[i], curve_y(py[i]), T_THEME);
 }
 
-/* two cycles, so that a shape's join shows */
-static void free_lfo(int32_t shape, int32_t start)
+/* one second across the space, so a faster rate shows more cycles */
+static void free_lfo(int32_t shape, int32_t start, int32_t rate)
 {
+    enum { CYCLE_MIN_PX = 7 };
     lfo_t l;
     int32_t x, py = 0;
+    uint64_t px_inc = (uint64_t)lfo_inc(rate) * (FS / CTL) / (FREE_W - 8u);
     lfo_start(&l, shape, LFO_RETRIGGER, 0, start);
-    l.inc = 0xFFFFFFFFu / ((FREE_W - 8u) / 2u);
+    l.inc = px_inc < 0xFFFFFFFFu / CYCLE_MIN_PX ? (uint32_t)px_inc : 0xFFFFFFFFu / CYCLE_MIN_PX;
     for (x = 0; x < (int32_t)FREE_W - 8; x++) {
         int32_t cy = CURVE_TOP + CURVE_H / 2 - lfo_block(&l, 0) * (CURVE_H / 2) / 32767;
+        if (x)
+            cv_line(3 + x, py, 4 + x, cy, T_THEME);
+        py = cy;
+    }
+}
+
+/* across, the CUT knob's scale: 14 units an octave. Down, 1 px a unit is 12 dB an octave at about 1.2 px a dB */
+static void free_filter(int32_t type, int32_t cut, int32_t res)
+{
+    enum { UNITY_Y = 20, PEAK_H = 17, PEAK_HALF_W = 8 };
+    int32_t x, w = (int32_t)FREE_W - 8, py = 0, peak = type == FLT_OFF ? 0 : clamp(res, 0, 127) * PEAK_H / 127;
+    cut = clamp(cut, 0, 127);
+    for (x = 0; x < w; x++) {
+        int32_t d = x * 127 / (w - 1) - cut, far = d < 0 ? -d : d;
+        int32_t fall = type == FLT_LP ? (d > 0 ? d : 0) : type == FLT_HP ? (d < 0 ? -d : 0) : type == FLT_BP ? far / 2 : 0;
+        int32_t rise = far < PEAK_HALF_W ? peak * (PEAK_HALF_W - far) / PEAK_HALF_W : 0;
+        int32_t cy = clamp(UNITY_Y + fall - rise, CURVE_TOP, CURVE_TOP + CURVE_H);
         if (x)
             cv_line(3 + x, py, 4 + x, cy, T_THEME);
         py = cy;
@@ -1110,7 +1149,7 @@ static void free_fm_chart(const pkt_t *p)
     for (i = 0; i < FM_OPS; i++)
         last_col = (uint32_t)FM_OP_COL(CELL[alg][i]) > last_col ? (uint32_t)FM_OP_COL(CELL[alg][i]) : last_col;
     width = (int32_t)last_col * CHART_PITCH_X + CHART_BOX_W;
-    left = ((int32_t)FREE_W - width) / 2;
+    left = 4;
     for (i = 0; i < FM_OPS; i++) {
         uint32_t c = CELL[alg][i];
         int32_t x = left + FM_OP_COL(c) * CHART_PITCH_X, y = chart_y(c), carrier = fm_is_carrier(alg, i);
@@ -1132,6 +1171,28 @@ static void free_fm_chart(const pkt_t *p)
         cv_rect(x, y + CHART_BOX_H - 2, 3, 1, T_MID);
     }
     cv_rect(left, CHART_BOTTOM + 1, width, 1, T_MID);
+}
+
+/* one carrier cycle from the engine itself, at full index. At this note a cycle is about as long as the plot is wide */
+static void free_fm_wave(const pkt_t *p)
+{
+    enum { NOTE = 77, X = 124, W = 62, TOP = 3, H = 60, BLOCKS = 3, SETTLE = 32 };
+    int32_t y[BLOCKS * CTL], i, py = 0;
+    fm_voice_t f;
+    pkt_t q = *p;
+    _Static_assert(SETTLE + W <= BLOCKS * CTL, "the render covers the plot");
+    q.v[PV_NOTE] = NOTE;
+    for (i = 0; i < BLOCKS * (int32_t)CTL; i++)
+        y[i] = 0;
+    fm_start(&f, &q);
+    for (i = 0; i < BLOCKS; i++)
+        fm_render(&f, &q, &y[i * (int32_t)CTL], 0, 32767, 0);
+    for (i = 0; i < W; i++) {
+        int32_t cy = TOP + H / 2 - clamp(y[SETTLE + i], -FM_PEAK, FM_PEAK) * (H / 2) / FM_PEAK;
+        if (i)
+            cv_line(X + i - 1, py, X + i, cy, T_THEME);
+        py = cy;
+    }
 }
 
 /* one cycle of the wave with SYNC's restarts. Below it, one tick per oscillator: across for DETUNE, a row per octave for STACK,
@@ -1254,7 +1315,7 @@ static void free_page_tabs(const page_t *pg)
 /* the pages whose drawing reads the packet redraw when it changes */
 static int free_reads_packet(const page_t *pg)
 {
-    return pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
+    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
 }
 
 static void draw_free(const page_t *pg, const track_pat_t *t)
@@ -1289,10 +1350,12 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             free_envelope(p.v[PV_AMP_A], p.v[PV_AMP_D], p.v[PV_AMP_S], p.v[PV_AMP_R]);
         else if (pg == &PAGES[PG_MOD])
             free_envelope(p.v[PV_MOD_A], p.v[PV_MOD_D], p.v[PV_MOD_S], p.v[PV_MOD_R]);
+        else if (pg == &PAGES[PG_FILTER])
+            free_filter(p.v[PV_FLT_TYPE], p.v[PV_FLT_CUT], p.v[PV_FLT_RES]);
         else if (pg == &PAGES[PG_LFO1])
-            free_lfo(p.v[PV_LFO1_SHAPE], p.v[PV_LFO1_START]);
+            free_lfo(p.v[PV_LFO1_SHAPE], p.v[PV_LFO1_START], p.v[PV_LFO1_RATE]);
         else if (pg == &PAGES[PG_LFO2])
-            free_lfo(p.v[PV_LFO2_SHAPE], p.v[PV_LFO2_START]);
+            free_lfo(p.v[PV_LFO2_SHAPE], p.v[PV_LFO2_START], p.v[PV_LFO2_RATE]);
         else if (pg == &PAGES[PG_SLOTS])
             free_routes(&p);
         else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_SWARM)
@@ -1301,8 +1364,10 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             free_perc(&p);
         else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_WAVE)
             free_wave(&p);
-        else if (pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2])
+        else if (pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) {
             free_fm_chart(&p);
+            free_fm_wave(&p);
+        }
         else if (pg == &PAGES[PG_SYSTEM])
             free_voices();
         else if (pg == &PAGES[PG_STEP] && !held_first)
@@ -1382,7 +1447,8 @@ static void draw_status(void)
 {
     char b[48], *s;
     uint32_t k, others = 0;
-    if (!(ui.dub && dub.full) && !held_first) {
+    uint32_t locks_full = (ui.dub && dub.full) || (ui.locks_full_t0 && fm1_ms - ui.locks_full_t0 < LOCKS_FULL_MS);
+    if (!locks_full && !held_first) {
         s = put_two_digits(put_text(b, "CPU "), audio_cpu_q8 * 100u / 256u);
         put_two_digits(put_text(s, " V "), voices_active());
         ui_text(LINE_STATUS, STATUS_X, BOTTOM_Y, SCREEN_EDGE - DROP_W - STATUS_X, &AF_S, b, T_MID, ALIGN_RIGHT);
@@ -1390,7 +1456,7 @@ static void draw_status(void)
         return;
     }
     line_drawn[LINE_DROP].text[0] = 0;
-    if (ui.dub && dub.full) {
+    if (locks_full) {
         put_text(b, "LOCKS FULL");
     } else {
         const step_t *st = &held_first->t->steps[held_first->step];

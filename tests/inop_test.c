@@ -222,6 +222,50 @@ static void test_voices_silence(void)
     CHECK(voices_active() == 0);
 }
 
+static void test_step_copy(void)
+{
+    track_pat_t *t = &patterns[0].track[0];
+    uint32_t i;
+    reset();
+    t->steps[8].on = 1;
+    t->steps[8].note = 70;
+    lock_set(t, 8, PV_PAN, 1);
+    lock_set(t, 8, PV_FLT_CUT, 2);
+    lock_set(t, 8, PV_FLT_RES, 3);
+    lock_set(t, 4, PV_DRIVE, 9);                        /* the target's old lock goes */
+    CHECK(step_copy(t, 8, 4) == 0);                     /* a target before the source moves the source's locks */
+    CHECK(step_lock_count(t, 4) == 3 && step_lock_count(t, 8) == 3);
+    CHECK(!step_value_locked(t, 4, PV_DRIVE));
+    CHECK(step_value_locked(t, 4, PV_PAN) && step_value_locked(t, 4, PV_FLT_CUT) && step_value_locked(t, 4, PV_FLT_RES));
+    CHECK(t->steps[4].on == 1 && t->steps[4].note == 70);
+    CHECK(step_copy(t, 8, 12) == 0 && step_lock_count(t, 12) == 3);
+    CHECK(step_copy(t, 8, 8) == 0 && step_lock_count(t, 8) == 3);   /* onto itself: no change */
+    for (i = t->nlock; i < TRACK_LOCKS; i++)
+        (void)lock_set(t, 20u + i / 40u, i % 40u, 1);
+    CHECK(t->nlock == TRACK_LOCKS);
+    CHECK(step_copy(t, 8, 14) != 0);                    /* no room: the caller is told */
+}
+
+static void test_step_clear_locks(void)
+{
+    track_pat_t *t = &patterns[0].track[0];
+    reset();
+    t->steps[5].on = 1;
+    t->steps[5].note = 40;
+    t->steps[5].vel = 40;
+    t->steps[5].len = 2;
+    t->steps[5].sound = 3;
+    t->steps[5].chance = 50;
+    lock_set(t, 5, PV_PAN, 1);
+    lock_set(t, 6, PV_PAN, 2);
+    CHECK(step_value_locked(t, 5, PV_NOTE) && step_value_locked(t, 5, PV_PAN) && !step_value_locked(t, 5, PV_FLT_CUT));
+    CHECK(!step_value_locked(t, 4, PV_PAN));
+    step_clear_locks(t, 5);
+    CHECK(!step_locked(t, 5) && !step_value_locked(t, 5, PV_NOTE) && !step_value_locked(t, 5, PV_PAN));
+    CHECK(t->steps[5].on == 1);                         /* the trigger stays */
+    CHECK(step_lock_count(t, 6) == 1);                  /* a neighbour's lock stays */
+}
+
 static void test_step_locked(void)
 {
     track_pat_t *t = &patterns[0].track[0];
@@ -2482,6 +2526,8 @@ int main(void)
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();
+    test_step_copy();
+    test_step_clear_locks();
     printf("sizeof(pattern_t) %zu, 27 patterns %zu KB, pool %zu B\n", sizeof(pattern_t),
            NPATTERN * sizeof(pattern_t) / 1024, sizeof pool);
     printf(fails ? "FAILED: %d\n" : "ok\n", fails);
