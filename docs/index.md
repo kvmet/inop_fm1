@@ -59,9 +59,10 @@ Shared effects and the master have a fixed CPU cost, which is reserved before vo
 
 - Each packet has free modulation slots. A slot holds a source, a destination and an amount.
 - A packet has 8 slots. Routes to one destination add up.
-- The sources are the mod envelope, LFO 1, LFO 2, velocity and random. Random draws one value per trigger and holds it for the note, from -1 to 1 of full scale.
-- The destinations are pitch, cutoff, resonance, level, pan, drive, shaper, bit crush, rate reduce, timbre and the rate of each LFO. A rate route works in retrigger mode only: a free LFO keeps its rate. An amount of 127 and a full source move a value by 127; pitch moves 16 semitones.
-- A new sound starts with mod envelope to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to cutoff, all at amount 0. Each slot can be changed.
+- The sources are mod envelope 1, mod envelope 2, LFO 1, LFO 2, velocity and random. Random draws one value per trigger and holds it for the note, from -1 to 1 of full scale.
+- The destinations are pitch, cutoff, resonance, level, pan, drive, shaper, bit crush, rate reduce, timbre, FM index and the rate of each LFO. A rate route works in retrigger mode only: a free LFO keeps its rate. An amount of 127 and a full source move a value by 127; pitch moves 16 semitones.
+- A new sound starts with mod envelope 1 to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to cutoff, all at amount 0, and mod envelope 1 to FM index at 127. Each slot can be changed.
+- **FM index:** routes to it scale the index, so the index knobs set the most it can reach, and an envelope at 127 reaches that at its peak. With no route, the index stays at its knobs. A route with amount 0 closes it. To have no route, set its source to off.
 
 ## Packet
 
@@ -71,7 +72,7 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 | --- | --- | --- | --- | --- | --- | --- |
 | Home | pan | note | velocity | length | level | priority |
 | Amp envelope | | attack | decay | sustain | release | |
-| Mod envelope | | attack | decay | sustain | release | |
+| Mod envelope 1, Mod envelope 2 | | attack | decay | sustain | release | |
 | Filter | | type | cutoff | resonance | key tracking | |
 | Effects | delay send | shaper | bit crush | rate reduce | drive | reverb send |
 | LFO 1, LFO 2 | | shape | phase mode | rate | start phase | |
@@ -169,7 +170,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | Page | Free space |
 | --- | --- |
 | Home | Peak meters: master left and right, delay send, reverb send. A full bar is the limiter's ceiling, and 1/8 of a bar is 6 dB. |
-| Amp envelope, Mod envelope | The envelope's shape, with a fixed width for the sustain. The curve is the envelope code's own output. One pixel is 0.73 ms until the curve fills the width, and then the curve scales to fit. |
+| Amp envelope, Mod envelopes | The envelope's shape, with a fixed width for the sustain. The curve is the envelope code's own output. One pixel is 0.73 ms until the curve fills the width, and then the curve scales to fit. |
 | Filter | The response on the CUT knob's scale, with a peak that follows RES. A sketch at 12 dB an octave, not a measurement. Key tracking does not show. |
 | LFO 1, LFO 2 | One second of the waveform at its start phase, so a faster rate shows more cycles, up to one cycle per 7 px. |
 | Mod slots | All 8 routes in 2 columns. The selected slot is brighter. |
@@ -184,7 +185,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | HOME | Home |
 | SEL | Engine 1, Engine 2 |
 | EDIT | Step |
-| ENV | Amp envelope, Mod envelope |
+| ENV | Amp envelope, Mod envelope 1, Mod envelope 2 |
 | FX | Filter, Effects |
 | LFO | LFO 1, LFO 2, Mod slots |
 | GLO | Global, Master, System |
@@ -300,8 +301,6 @@ The amp envelope means the same as on every other engine:
 - Clear and randomize during overdub, including a way to unset locks and free their memory.
 - Chord modes.
 - Quantization: pitch to a scale, and recorded notes to steps.
-- Filter envelope, possibly as more assignable envelopes in the mod slots.
-- FM index routing: the MOD envelope is wired to the index, so it cannot shape the index and something else separately. Consider more mod slots and envelopes, with envelope to index as a removable default route. Decide with the page review.
 - Arpeggiator.
 - Microtiming: a step fires ahead of or behind the grid.
 - Swing.

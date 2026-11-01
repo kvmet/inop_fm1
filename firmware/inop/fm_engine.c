@@ -93,11 +93,11 @@ static AUDIO_INLINE uint32_t fm_op_inc(uint32_t base, int32_t ratio, int32_t det
         pb2 += ib2; \
     }
 
-/* adds one block to out. pitch: an offset in 1/16 semitones. mod_q15: the MOD envelope. timbre: an offset to both indexes */
-static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, int32_t pitch, int32_t mod_q15, int32_t timbre)
+/* adds one block to out. pitch: an offset in 1/16 semitones. index_q15: what the mod routes make of the index. timbre: an offset to both indexes */
+static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, int32_t pitch, int32_t index_q15, int32_t timbre)
 {
     int32_t y[CTL];
-    int32_t target_a = (fm_squared(p->v[PV_E4] + timbre, 32767) * mod_q15) >> 15, target_b = (fm_squared(p->v[PV_E5] + timbre, 32767) * mod_q15) >> 15;
+    int32_t target_a = (fm_squared(p->v[PV_E4] + timbre, 32767) * index_q15) >> 15, target_b = (fm_squared(p->v[PV_E5] + timbre, 32767) * index_q15) >> 15;
     int32_t depth_a = f->gain_a, depth_b = f->gain_b, step_a = (target_a - depth_a) / (int32_t)(CTL / FM_DEPTH_STEP), step_b = (target_b - depth_b) / (int32_t)(CTL / FM_DEPTH_STEP);
     int32_t h1 = f->held[0], h2 = f->held[1], fb = f->feedback, detune = fm_squared(p->v[PV_E7], 16384);   /* 1/4 is 1 semitone */
     uint32_t base = note_inc(p->v[PV_NOTE] * 16 + pitch), s;

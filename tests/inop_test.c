@@ -416,6 +416,75 @@ static void test_mod_lfo_rate_route(void)
     CHECK(c.lfo[0].inc == lfo_inc(40));                 /* a free LFO's rate does not move */
 }
 
+/* the starting route gives the sound FM had when its envelope was wired to the index */
+static void test_fm_index_route_keeps_sound(void)
+{
+    pkt_t p;
+    chain_t c;
+    fm_voice_t routed, wired;
+    uint32_t b, i;
+    int32_t worst = 0, loudest = 0;
+    sound_init(&p, 1);
+    p.v[PV_NOTE] = 48;
+    p.v[PV_E4] = p.v[PV_E5] = 100;
+    p.v[PV_MOD_D] = 80;
+    p.v[PV_MOD_S] = 20;
+    chain_start(&c, &p);
+    fm_start(&routed, &p);
+    fm_start(&wired, &p);
+    for (b = 0; b < 800u; b++) {
+        int32_t x[CTL] = {0}, y[CTL] = {0};
+        chain_mod(&c, &p, b);
+        CHECK(abs(chain_fm_index_q15(&c) - (c.mod_env.env >> 9)) <= 3);
+        fm_render(&routed, &p, x, 0, chain_fm_index_q15(&c), 0);
+        fm_render(&wired, &p, y, 0, c.mod_env.env >> 9, 0);
+        for (i = 0; i < CTL; i++) {
+            worst = abs(x[i] - y[i]) > worst ? abs(x[i] - y[i]) : worst;
+            loudest = abs(y[i]) > loudest ? abs(y[i]) : loudest;
+        }
+    }
+    CHECK(loudest > 1000);
+    CHECK(worst <= loudest / 20);                       /* at this index a few parts in 32768 of depth move a peak about 4 % */
+}
+
+static void test_fm_index_routes(void)
+{
+    pkt_t p;
+    chain_t c;
+    uint32_t b;
+    sound_init(&p, 0);
+    p.v[PV_MOD_D] = 20;
+    p.v[PV_MOD_S] = 0;
+    p.v[PV_MOD2_S] = 127;
+    chain_start(&c, &p);
+    for (b = 0; b < 3000u; b++)
+        chain_mod(&c, &p, b);
+    CHECK(chain_fm_index_q15(&c) < 200);                /* the route follows the envelope down */
+    p.v[PV_SLOT_SRC4] = MOD_SRC_ENV2;
+    chain_start(&c, &p);
+    for (b = 0; b < 3000u; b++)
+        chain_mod(&c, &p, b);
+    CHECK(chain_fm_index_q15(&c) > 32000);              /* a second envelope drives it apart from the first */
+    CHECK(c.mod_env.env >> 9 < 200);
+    p.v[PV_SLOT_SRC4] = MOD_SRC_OFF;
+    chain_start(&c, &p);
+    for (b = 0; b < 3000u; b++)
+        chain_mod(&c, &p, b);
+    CHECK(chain_fm_index_q15(&c) == 32768);             /* no route: the knob's value */
+    p.v[PV_SLOT_SRC4] = MOD_SRC_ENV2;
+    p.v[PV_SLOT_AMT4] = 0;
+    chain_start(&c, &p);
+    chain_mod(&c, &p, 0);
+    CHECK(chain_fm_index_q15(&c) == 0);                 /* amount 0 is the end of the knob's range, with no jump to full */
+    p.v[PV_SLOT_AMT4] = -127;
+    chain_start(&c, &p);
+    for (b = 0; b < 3000u; b++)
+        chain_mod(&c, &p, b);
+    CHECK(chain_fm_index_q15(&c) == 0);                 /* a scale does not go below 0 */
+    chain_release(&c);
+    CHECK(c.mod2_env.stage == ENV_RELEASE);             /* the second envelope ends with the note */
+}
+
 static void test_stop_and_start(void)
 {
     seq_t q;
@@ -1056,7 +1125,7 @@ static void test_mod_routes(void)
     chain_start(&c, &p);
     chain_mod(&c, &p, 0);
     for (n = 0; n < MOD_DSTS; n++)
-        CHECK(c.off[n] == 0);                           /* the default routes have amount 0 */
+        CHECK(n == MOD_DST_INDEX || c.off[n] == 0);     /* the other default routes have amount 0 */
     p.v[PV_MOD_S] = 127;
     p.v[PV_SLOT_AMT0] = 64;
     chain_start(&c, &p);
@@ -2794,6 +2863,8 @@ int main(void)
     test_master_volume_last();
     test_mod_random_source();
     test_mod_lfo_rate_route();
+    test_fm_index_route_keeps_sound();
+    test_fm_index_routes();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

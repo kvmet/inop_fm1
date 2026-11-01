@@ -9,8 +9,6 @@ _Static_assert((1 << CTL_BITS) == CTL, "the amp ramp divides by a shift");
 
 enum { FLT_OFF, FLT_LP, FLT_BP, FLT_HP, FLT_TYPES };
 enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
-enum { MOD_SRC_OFF, MOD_SRC_ENV, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_VEL, MOD_SRC_RANDOM, MOD_SRCS };
-enum { MOD_DST_OFF, MOD_DST_PITCH, MOD_DST_CUT, MOD_DST_RES, MOD_DST_LEVEL, MOD_DST_PAN, MOD_DST_DRIVE, MOD_DST_SHAPER, MOD_DST_CRUSH, MOD_DST_RATE, MOD_DST_TIMBRE, MOD_DST_LFO1_RATE, MOD_DST_LFO2_RATE, MOD_DSTS };
 enum { LFO_SINE, LFO_TRI, LFO_SAW, LFO_SQUARE, LFO_SH, LFO_SHAPES };
 enum { LFO_RETRIGGER, LFO_FREE, LFO_MODES };
 #define MOD_SLOTS 8u
@@ -29,9 +27,10 @@ typedef struct {
 } lfo_t;
 
 typedef struct {
-    env_t amp_env, mod_env;
+    env_t amp_env, mod_env, mod2_env;
     lfo_t lfo[2];
     int32_t off[MOD_DSTS];       /* this block's modulation, in packet units Q8 */
+    uint8_t index_routed;        /* a slot routes to the FM index */
     int32_t random;              /* the random source: one value for the trigger's whole life */
     int32_t lfo_rate_off[2];     /* the rate offset each LFO's inc holds */
     int32_t gain_l, gain_r;      /* Q15: the level the last block ended at */
@@ -269,11 +268,15 @@ static void chain_start(chain_t *c, const pkt_t *p)
     uint32_t i;
     env_start(&c->amp_env, p->v[PV_AMP_A], p->v[PV_AMP_D], p->v[PV_AMP_S], p->v[PV_AMP_R]);
     env_start(&c->mod_env, p->v[PV_MOD_A], p->v[PV_MOD_D], p->v[PV_MOD_S], p->v[PV_MOD_R]);
+    env_start(&c->mod2_env, p->v[PV_MOD2_A], p->v[PV_MOD2_D], p->v[PV_MOD2_S], p->v[PV_MOD2_R]);
     lfo_start(&c->lfo[0], p->v[PV_LFO1_SHAPE], p->v[PV_LFO1_PHASE], p->v[PV_LFO1_RATE], p->v[PV_LFO1_START]);
     lfo_start(&c->lfo[1], p->v[PV_LFO2_SHAPE], p->v[PV_LFO2_PHASE], p->v[PV_LFO2_RATE], p->v[PV_LFO2_START]);
     for (i = 0; i < MOD_DSTS; i++)
         c->off[i] = 0;
     c->random = clamp(mod_random(), -32767, 32767);
+    c->index_routed = 0;
+    for (i = 0; i < MOD_SLOTS; i++)
+        c->index_routed |= p->v[PV_SLOT_DST0 + i] == MOD_DST_INDEX && p->v[PV_SLOT_SRC0 + i] != MOD_SRC_OFF;
     c->lfo_rate_off[0] = c->lfo_rate_off[1] = 0;
     c->gain_l = c->gain_r = 0;
     c->cut_q8 = c->res_q8 = -1;
@@ -288,6 +291,7 @@ static AUDIO_INLINE void chain_release(chain_t *c)
 {
     env_release(&c->amp_env);
     env_release(&c->mod_env);
+    env_release(&c->mod2_env);
 }
 
 /* a free LFO's phase comes from its rate and the clock, so a moving rate would throw the phase around */
@@ -306,8 +310,10 @@ static AUDIO_INLINE void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
     int32_t src[MOD_SRCS];
     uint32_t i;
     env_block(&c->mod_env);
+    env_block(&c->mod2_env);
     src[MOD_SRC_OFF] = 0;
     src[MOD_SRC_ENV] = c->mod_env.env >> 9;
+    src[MOD_SRC_ENV2] = c->mod2_env.env >> 9;
     src[MOD_SRC_LFO1] = lfo_block(&c->lfo[0], clock);
     src[MOD_SRC_LFO2] = lfo_block(&c->lfo[1], clock);
     src[MOD_SRC_VEL] = clamp(p->v[PV_VEL], 0, 127) * 258;
@@ -320,6 +326,12 @@ static AUDIO_INLINE void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
     }
     chain_lfo_rate(c, 0, p->v[PV_LFO1_RATE]);
     chain_lfo_rate(c, 1, p->v[PV_LFO2_RATE]);
+}
+
+/* Q15. Routes to the index scale it, so an envelope at 127 opens it fully at the envelope's peak. With no route it stays at its knob */
+static AUDIO_INLINE int32_t chain_fm_index_q15(const chain_t *c)
+{
+    return c->index_routed ? clamp((c->off[MOD_DST_INDEX] * 129) >> 7, 0, 32768) : 32768;
 }
 
 static AUDIO_INLINE int32_t softclip(int32_t x)

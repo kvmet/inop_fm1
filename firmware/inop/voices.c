@@ -205,7 +205,7 @@ AUDIO_RAM static void voice_render(voice_t *v, int32_t *l, int32_t *r, int32_t *
     else if (voice_engine(&v->pkt) == ENGINE_WAVE)
         wave_render(&v->engine.wave, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.off[MOD_DST_TIMBRE] >> 8);
     else
-        fm_render(&v->engine.fm, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.mod_env.env >> 9, v->chain.off[MOD_DST_TIMBRE] >> 8);
+        fm_render(&v->engine.fm, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, chain_fm_index_q15(&v->chain), v->chain.off[MOD_DST_TIMBRE] >> 8);
     alive &= chain_render(&v->chain, &v->pkt, x, l, r, delay_bus, reverb_bus);
     if (alive)
         return;

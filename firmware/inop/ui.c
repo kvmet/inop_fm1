@@ -24,7 +24,8 @@ static const page_t PAGES[] = {
     {"HOME", {PV_PAN, PV_NOTE, PV_VEL, PV_LEN, PV_LEVEL, PV_PRIO}, {"PAN", "NOTE", "VEL", "LEN", "LEVEL", "PRIO"}},
     {"AMP", {ID_NONE, PV_AMP_A, PV_AMP_D, PV_AMP_S, PV_AMP_R, ID_NONE}, {"", "ATK", "DEC", "SUS", "REL", ""}},
     {"FLT", {ID_NONE, PV_FLT_TYPE, PV_FLT_CUT, PV_FLT_RES, PV_FLT_KEY, ID_NONE}, {"", "TYPE", "CUT", "RES", "KEY", ""}},
-    {"MOD", {ID_NONE, PV_MOD_A, PV_MOD_D, PV_MOD_S, PV_MOD_R, ID_NONE}, {"", "ATK", "DEC", "SUS", "REL", ""}},
+    {"MOD1", {ID_NONE, PV_MOD_A, PV_MOD_D, PV_MOD_S, PV_MOD_R, ID_NONE}, {"", "ATK", "DEC", "SUS", "REL", ""}},
+    {"MOD2", {ID_NONE, PV_MOD2_A, PV_MOD2_D, PV_MOD2_S, PV_MOD2_R, ID_NONE}, {"", "ATK", "DEC", "SUS", "REL", ""}},
     {"FX", {PV_SEND_DELAY, PV_SHAPER, PV_CRUSH, PV_RATE, PV_DRIVE, PV_SEND_REVERB}, {"DELAY", "SHAPE", "CRUSH", "RATE", "DRIVE", "REVERB"}},
     {"LFO1", {ID_NONE, PV_LFO1_SHAPE, PV_LFO1_PHASE, PV_LFO1_RATE, PV_LFO1_START, ID_NONE}, {"", "SHAPE", "MODE", "RATE", "START", ""}},
     {"LFO2", {ID_NONE, PV_LFO2_SHAPE, PV_LFO2_PHASE, PV_LFO2_RATE, PV_LFO2_START, ID_NONE}, {"", "SHAPE", "MODE", "RATE", "START", ""}},
@@ -40,7 +41,7 @@ static const page_t PAGES[] = {
     {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_NONE, ID_NONE, ID_NONE}, {"", "LENGTH", "SOUND", "", "", ""}},
 };
 
-enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
+enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_MOD2, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
 _Static_assert(PG_TRACK + 1 == NELEM(PAGES), "PG_ names follow PAGES");
 
 /* a page button's first press shows its group's last page; each next press moves through the group */
@@ -49,7 +50,7 @@ static const page_group_t GROUPS[] = {
     {B_HOME, 1, {PG_HOME}},
     {B_SEL, 2, {PG_E1, PG_E2}},
     {B_EDIT, 1, {PG_STEP}},
-    {B_ENV, 2, {PG_AMP, PG_MOD}},
+    {B_ENV, 3, {PG_AMP, PG_MOD, PG_MOD2}},
     {B_FX, 2, {PG_FILTER, PG_FX}},
     {B_LFO, 3, {PG_LFO1, PG_LFO2, PG_SLOTS}},
     {B_GLO, 3, {PG_GLOBAL, PG_MASTER, PG_SYSTEM}},
@@ -166,8 +167,8 @@ static int32_t ui_value(uint32_t id)
 /* a selector's names, or 0 for a plain number */
 static const char *const NAMES_SLOT[MOD_SLOTS] = {"1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const NAMES_FILTER[FLT_TYPES] = {"OFF", "LP", "BP", "HP"};
-static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "ENV", "LF1", "LF2", "VEL", "RND"};
-static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB", "LF1R", "LF2R"};
+static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "EN1", "EN2", "LF1", "LF2", "VEL", "RND"};
+static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB", "INDX", "LF1R", "LF2R"};
 static const char *const NAMES_SHAPE[LFO_SHAPES] = {"SINE", "TRI", "SAW", "SQR", "S+H"};
 static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE"};
 static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PERC", "SWARM", "WAVE"};
@@ -1376,7 +1377,7 @@ static void free_page_tabs(const page_t *pg)
 /* the pages whose drawing reads the packet redraw when it changes */
 static int free_reads_packet(const page_t *pg)
 {
-    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
+    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_MOD2] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
 }
 
 static void draw_free(const page_t *pg, const track_pat_t *t)
@@ -1413,6 +1414,8 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             free_envelope(p.v[PV_AMP_A], p.v[PV_AMP_D], p.v[PV_AMP_S], p.v[PV_AMP_R]);
         else if (pg == &PAGES[PG_MOD])
             free_envelope(p.v[PV_MOD_A], p.v[PV_MOD_D], p.v[PV_MOD_S], p.v[PV_MOD_R]);
+        else if (pg == &PAGES[PG_MOD2])
+            free_envelope(p.v[PV_MOD2_A], p.v[PV_MOD2_D], p.v[PV_MOD2_S], p.v[PV_MOD2_R]);
         else if (pg == &PAGES[PG_FILTER])
             free_filter(p.v[PV_FLT_TYPE], p.v[PV_FLT_CUT], p.v[PV_FLT_RES]);
         else if (pg == &PAGES[PG_LFO1])
