@@ -21,6 +21,7 @@ typedef struct {
 } voice_t;
 
 static voice_t voices[NVOICE] __attribute__((section(".pool")));
+static arp_t arps[NTRK] __attribute__((section(".pool")));
 static uint32_t voice_clock;
 static uint32_t mod_clock;       /* render blocks since boot: free-running LFOs read it */
 static uint32_t voice_cost[ENGINES];     /* ticks of one block, measured at boot */
@@ -198,6 +199,12 @@ static int pkt_same(const pkt_t *a, const pkt_t *b)
 static uint32_t voice_trigger_step(const pkt_t *p, uint32_t track, uint32_t samples_per_step, uint32_t hits)
 {
     uint32_t key = KEY_TRACK(track), i, held = p->v[PV_LEN] == (int8_t)LEN_HOLD, span = held ? 1u : (uint32_t)p->v[PV_LEN];
+    if (p->v[PV_ARP_MODE] != ARP_OFF) {
+        voice_release_key(key);
+        arp_note_on(&arps[track], p, ARP_OWNER_STEP, held ? 0u : span * samples_per_step, 0);
+        return span;
+    }
+    arp_end_held(&arps[track]);
     if (!held || hits > 1u) {
         voice_release_key(key);
         voice_trigger(p, KEY_NONE, span * samples_per_step / hits / CTL);
@@ -225,6 +232,12 @@ static void voices_hold_service(const pattern_t *pattern)
         if (t->steps[i].on)
             return;
     voice_release_key(KEY_TRACK(k));
+    arp_end_held(&arps[k]);
+}
+
+static void voice_arp_hit(const pkt_t *p, uint32_t hold_blocks)
+{
+    voice_trigger(p, KEY_NONE, hold_blocks);
 }
 
 static void voices_silence(void)
@@ -234,6 +247,8 @@ static void voices_silence(void)
         voices[i].has_next = 0;
         voice_fade(&voices[i]);
     }
+    for (i = 0; i < NTRK; i++)
+        arps[i].n = 0;
 }
 
 static uint32_t voices_active(void)

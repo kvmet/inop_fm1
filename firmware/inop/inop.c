@@ -75,6 +75,7 @@ struct { uint32_t magic, failed, pending; } bootguard __attribute__((section(".n
 #define POOL_SECTION __attribute__((section(".pool")))
 #include "fx_sends.c"
 #include "voice_steal.c"
+#include "arp.c"
 #include "voices.c"
 #include "usb.c"
 #include "audio_out.c"

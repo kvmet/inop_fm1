@@ -32,20 +32,35 @@ static uint32_t seq_emit(uint32_t track, uint32_t step, const track_pat_t *t, ui
 /* keys poll here so a press waits at most one block */
 static int32_t keys_note(uint32_t k) { return 53 + (int32_t)k + 12 * keys_octave; }   /* key 0 is F3 at octave 0 */
 
+/* a played arp starts on its rate's next boundary, so it stays on the sequencer's grid. In sixths of a sample, as arp_t.wait */
+static int32_t keys_arp_wait(const pkt_t *p)
+{
+    uint32_t cycle = LFO_SYNC_UNITS_PER_STEP / 6u * arp_rate_sixths(p), into = seq_sync_pos(&seq) % cycle;
+    return seq.run == SEQ_RUNNING && into ? (int32_t)((cycle - into) * seq.samples_per_step / (LFO_SYNC_UNITS_PER_STEP / 6u)) : 0;
+}
+
 static void keys_block(void)
 {
     static uint32_t held;
-    uint32_t now = keys_play ? fm1_in.notes & keys_mask : 0u, changed = now ^ held, k;
+    uint32_t now = keys_play ? fm1_in.notes & keys_mask : 0u, changed = now ^ held, k, i;
+    const sound_t *base = &sounds[patterns[seq.playing].track[keys_track].base];
     held = now;
+    if (base->v[PV_ARP_MODE] == ARP_OFF || !base->v[PV_ARP_LATCH])
+        arp_remove_released(&arps[keys_track]);
     for (k = 0; changed; k++, changed >>= 1) {
         if (!(changed & 1u))
             continue;
         if ((now >> k) & 1u) {
-            pkt_t p = sounds[patterns[seq.playing].track[keys_track].base];
+            pkt_t p = *base;
             p.v[PV_NOTE] = (int8_t)keys_note(k);
-            voice_trigger(&p, k, 0);
+            if (p.v[PV_ARP_MODE] != ARP_OFF)
+                arp_note_on(&arps[keys_track], &p, k, 0, keys_arp_wait(&p));
+            else
+                voice_trigger(&p, k, 0);
         } else {
             voice_release_key(k);
+            for (i = 0; i < NTRK; i++)
+                arp_key_off(&arps[i], k);
         }
     }
 }
@@ -65,6 +80,8 @@ static void audio_block(int32_t *out)
         l[i] = r[i] = delay_bus[i] = reverb_bus[i] = 0;
     keys_block();
     seq_block(&seq, patterns, CTL, seq_emit);
+    for (i = 0; i < NTRK; i++)
+        arp_block(&arps[i], CTL, seq.samples_per_step, voice_arp_hit);
     lfo_sync_pos = seq_sync_pos(&seq);
     voices_hold_service(&patterns[seq.playing]);
     voices_render(l, r, delay_bus, reverb_bus);

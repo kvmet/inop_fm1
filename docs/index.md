@@ -45,6 +45,27 @@ A stolen voice fades out over one audio block, and the new voice starts in the n
 - Rate 0 is one cycle in 20 s, and the rate doubles every 12 values.
 - In sync mode, rate picks a cycle length: 1/32, 1/16, 1/8T, 1/8, 1/4T, 1/4, 1/2T, 1/2, then 1, 2, 4, 8 or 16 bars of 16 steps. It follows the tempo. Stop rewinds it, and a pattern change does not.
 
+## Arp
+
+The arp sits after the sequencer and the keys, and before the voices. Its values are in the packet, so a sound carries them and a step can lock them. Each track has one arp.
+
+| Knob | Name | Values |
+| --- | --- | --- |
+| Knob 1 | MODE | `OFF`, `UP`, `DOWN`, `UPDN`, `PLAY` (in the order the notes came) or `RAND`. `UPDN` sounds the top and bottom notes once a cycle. |
+| Knob 2 | RATE | 1/32, 1/16, 1/8T, 1/8, 1/4T or 1/4. It follows the tempo. |
+| Knob 3 | RANGE | 1 to 4 octaves. |
+| Knob 4 | GATE | How much of each hit sounds. At 127 a hit lasts until the next one. |
+| ALGO | LATCH | Keys only. On, the notes stay after the keys are up, and the next press with no key down replaces them. Off ends them. So does `MODE` `OFF`. |
+
+- **Steps:** a step that fires gives its note to the arp for the note's length. At length 1 and RATE 1/16, that is one hit, so raise LEN to hear the arp run. A `HOLD` note stays until the track's next note, or until the track has no steps on.
+- **Chords:** notes on one track that overlap arpeggiate together, up to 8. A 9th replaces the oldest. A pitch already there is replaced, not doubled.
+- **Locks:** each note keeps its own packet, so each hit has the locks of its step. Only the pitch moves, by RANGE's octaves. The newest note's MODE, RATE, RANGE and GATE run the arp.
+- **Timing:** when a step starts an arp, the first hit is at once, so the step's TIME and SWING count. Later hits follow RATE. A key that starts an arp while the sequencer runs waits for RATE's next boundary. While stopped, it starts at once.
+- **Voices:** each hit is a trigger, so priority and the voice budget apply.
+- **Overdub:** it records the notes that were played, not the hits. Steps play them back through the arp.
+- **Stop:** stop empties every arp.
+- **Screen:** the free space shows 16 steps of the arp's order on C, E and G, with a bar for each hit as wide as its gate.
+
 ## Audio path
 
 Each voice runs from its packet in this order: engine, drive, shaper, bit crush, rate reduce, filter, amp envelope, level, pan, sends. An effect at 0 costs no CPU. The filter type is off, low-pass, band-pass or high-pass; off costs no CPU.
@@ -109,6 +130,7 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 | Sends | | delay send | reverb send | follower send | stereo | |
 | LFO 1, LFO 2 | | shape | phase mode | rate | start phase | |
 | Mod slots | slot number | source | destination | amount | | |
+| Arp | | mode | rate | range | gate | latch |
 | Engine 1 | engine | E1 | E2 | E3 | E4 | patch or model |
 | Engine 2 | | E5 | E6 | E7 | | |
 
@@ -166,7 +188,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 - **Clear locks:** hold a step and tap REC. The step keeps its trigger and loses its locks, its note, velocity and length, its sound, its chance, its ratchet and its time. Every held step clears. There is no undo yet.
 - **Overdub:** tap REC, under 300 ms with nothing else pressed. The playing pattern takes what you do on the selected track, and it keeps playing. Tap REC or PLAY to exit.
   - **Notes:** a key sounds at once and goes to the nearest step of the track. That step is turned on and takes the note and the held length. A step holds one note, so a second note on a step replaces the first.
-  - **Black keys:** the black keys are notes too, and the last one stays shift. Hold REC and press OP1 to OP6 to change tracks. The key LEDs show the keyboard as in play, not the steps, and the selected track's key flashes. `DUB` in the title bar inverts in time with it.
+  - **Black keys:** the black keys are notes too, and the last one stays shift. Hold REC and press OP1 to OP6 to change tracks. The key LEDs show the keyboard as in play, not the steps. The selected track's key and the REC button flash, and `DUB` in the title bar inverts in time with them.
   - **Knobs:** the knob squares show the values of the track's last trigger, so locks show as they play. A turned knob starts from the value shown and writes its value to each step the playhead reaches. It stops when the knob has been still for one step or 150 ms, whichever is longer. Hold REC to keep writing the knobs turned so far, then release REC to stop.
   - **Locks:** a lock changes only its step's trigger, so a step that is off takes no lock, and a sweep does not change a note already sounding. `LOCKS FULL` shows when the track has no lock memory left.
   - **Other controls:** the sound, global and track values change as usual and are not recorded. SEQ does nothing. There is no undo yet.
@@ -175,9 +197,9 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 ## Keyboard
 
 - **Steps (default):** tap a white key to toggle its step. The title bar says `STEPS`.
-- **Notes:** tap PLAY. White keys play notes, and nothing is recorded. The title bar says `NOTES`. Tap PLAY again to return to steps.
+- **Notes:** tap PLAY. The white and black keys play notes, and nothing is recorded. The last black key stays shift. Hold REC and press OP1 to OP6 to change tracks. The title bar says `NOTES`. Tap PLAY again to return to steps.
 - **Stop:** hold shift and press PLAY. The sequencer stops at step 1, the voices fade at once, and the counter says `STOP`. Press again to start from step 1. A pattern chosen while stopped starts at once. The keys still play notes while stopped.
-- **Black keys:** OP1 to OP6 select a track, except in overdub, where they need REC held. Hold one for 300 ms to show the track page while it is held: knob 1 sets the track length, and knob 2 sets the base sound.
+- **Black keys:** in steps mode, OP1 to OP6 select a track. Hold one for 300 ms to show the track page while it is held: knob 1 sets the track length, and knob 2 sets the base sound. In notes mode and overdub, they need REC held to select a track, and the track page does not show.
 - **OCT:** in steps mode, OCT moves the steps that the white keys reach. In notes mode, OCT moves the keys by an octave, up to 3 each way. The bottom line of the screen says which.
 - **Shift:** hold the last black key to move numeric values by 10 per click. Selectors still move by 1. Shift is off in pattern select, where that key is a pattern.
 - **Patterns:** tap SEQ for pattern select, and tap SEQ again to leave. Each of the 27 keys is one pattern, with no banks. Hold REC there to copy a pattern: press the source, then each destination.
@@ -211,7 +233,8 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | Step | `HOLD A STEP` until a step is held. |
 | System | Cost in us of one block: each engine alone and shared, each effect, delay, reverb and master, and the budget. Then late buffers, stolen voices and drops. |
 | Master | See Master. |
-| Arp, Save | `NOT BUILT`. Save warns that power off loses everything. |
+| Arp | See Arp. |
+| Save | `NOT BUILT`. It warns that power off loses everything. |
 
 | Button | Pages |
 | --- | --- |
@@ -222,7 +245,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | FX | Filter, Effects, Sends |
 | LFO | LFO 1, LFO 2, Mod slots, Follower |
 | GLO | Global, Master, System |
-| ARP | Arp (reserved for a Perform and Arp group) |
+| ARP | Arp |
 | SAVE | Save |
 
 The Step page edits held steps. Knobs do nothing there with no step held.
@@ -360,8 +383,11 @@ python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
 - Clear and randomize during overdub, including a way to unset locks and free their memory.
 - Shared lock memory: one pool of 1620 locks per pattern that any track can use, in place of 270 per track. It costs no memory. Do this when a track first runs out, or before chords.
 - Chord modes and chord recording. A step keeps one note in its own field, and each added note is a lock on that step.
+- Track transpose, with the chord and key mode, so a transpose can stay in the key.
 - Quantization: pitch to a scale, and recorded notes to steps.
-- Arpeggiator.
+- Mod destinations per engine: the slot list is the same on every engine. On SWARM, `TIMB` moves SHAPE under a name the engine does not use, and `INDX` does nothing. Each engine should list only what it has, under that value's own name.
+- Overdub timing: a choice to keep a recorded note's timing, by writing how far it landed from its step into the step's TIME.
+- Macros: two mod sources set from a panel knob, read every block, so a turn reaches notes that are already ringing.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
 - Multiband compression on the master.

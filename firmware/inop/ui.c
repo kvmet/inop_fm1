@@ -38,7 +38,7 @@ static const page_t PAGES[] = {
     {"STEP", {ID_NONE, ID_CHANCE, ID_HITS, ID_TIME, ID_NONE, ID_NONE}, {"", "CHANCE", "RATCH", "TIME", "", ""}},
     {"MAST", {ID_GLOBAL(G_MST_WIDTH), ID_GLOBAL(G_MST_COMP), ID_GLOBAL(G_MST_ATTACK), ID_GLOBAL(G_MST_RELEASE), ID_GLOBAL(G_MST_TILT), ID_GLOBAL(G_MST_DRIVE)}, {"WIDTH", "COMP", "ATK", "REL", "TILT", "DRIVE"}},
     {"SYS", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
-    {"ARP", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
+    {"ARP", {ID_NONE, PV_ARP_MODE, PV_ARP_RATE, PV_ARP_RANGE, PV_ARP_GATE, PV_ARP_LATCH}, {"", "MODE", "RATE", "RANGE", "GATE", "LATCH"}},
     {"SAVE", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_SWING, ID_HUMAN, ID_NONE}, {"", "LENGTH", "SOUND", "SWING", "HUMAN", ""}},
 };
@@ -195,6 +195,9 @@ static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE", "SYNC"};
 static const char *const NAMES_LFO_SYNC[LFO_SYNC_RATES] = {"1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2T", "1/2", "1 BAR", "2 BAR", "4 BAR", "8 BAR", "16BAR"};
 static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PERC", "SWARM", "WAVE"};
 static const char *const NAMES_PRIO[PRIOS] = {"XXLO", "XLO", "LOW", "NORM", "HIGH", "XHI", "XXHI"};
+static const char *const NAMES_ARP_MODE[ARP_MODES] = {"OFF", "UP", "DOWN", "UPDN", "PLAY", "RAND"};
+static const char *const NAMES_ARP_RATE[ARP_RATES] = {"1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4"};
+static const char *const NAMES_OFF_ON[2] = {"OFF", "ON"};
 static const char *const NAMES_WAVE[WAVE_TABLES] = {"HARM", "PWM", "SYNC", "VOX", "FOLD", "DIGI", "METAL", "GRIT"};
 static const char *const LABELS_WAVE[7] = {"WAVE", "WARP", "PITCH2", "CROSS", "OSC2", "DETUNE", "NOISE"};
 
@@ -225,6 +228,9 @@ static const char *const *value_names(uint32_t id, int32_t *count)
     if (id == PV_FLT_TYPE) { *count = FLT_TYPES; return NAMES_FILTER; }
     if (id == PV_ENGINE) { *count = ENGINES; return NAMES_ENGINE; }
     if (id == PV_PRIO) { *count = PRIOS; return NAMES_PRIO; }
+    if (id == PV_ARP_MODE) { *count = ARP_MODES; return NAMES_ARP_MODE; }
+    if (id == PV_ARP_RATE) { *count = ARP_RATES; return NAMES_ARP_RATE; }
+    if (id == PV_ARP_LATCH) { *count = 2; return NAMES_OFF_ON; }
     if (id == PV_E0 && ui_engine() == ENGINE_WAVE) { *count = WAVE_TABLES; return NAMES_WAVE; }
     if (id == PV_E0 && ui_engine() == ENGINE_PERC) { *count = PERC_MODES; return NAMES_PERC; }
     if (id == PV_E0 && ui_engine() == ENGINE_SWARM) { *count = SWARM_MODES; return NAMES_SWARM; }
@@ -265,6 +271,8 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, 1, 127);
     if (id == PV_LEN)
         return clamp(v, 1, LEN_HOLD);
+    if (id == PV_ARP_RANGE)
+        return clamp(v, 1, ARP_RANGE_MAX);
     if (value_names(id, &count))
         return clamp(v, 0, count - 1);
     if (id == PV_PAN)
@@ -311,8 +319,8 @@ static void dub_service(uint32_t rec)
     ui.edit_pat = seq.playing;
 }
 
-/* REC + a track key picks the track in overdub, so that press must not also play the black key's note */
-static uint32_t dub_keys_mask(uint32_t rec) { return rec ? white_keys : ((1u << 27) - 1u) & ~(1u << black_key[SHIFT_BLACK]); }
+/* REC + a track key picks the track while the keys play notes, so that press must not also play the black key's note */
+static uint32_t keys_note_mask(uint32_t rec) { return rec ? white_keys : ((1u << 27) - 1u) & ~(1u << black_key[SHIFT_BLACK]); }
 
 static void dub_enter(void)
 {
@@ -330,7 +338,6 @@ static void dub_exit(void)
 {
     ui.dub = 0;
     keys_play = ui.dub_prev_play;
-    keys_mask = white_keys;
 }
 
 /* a press sounds now. On a step still ahead, that step must not sound again when the playhead reaches it */
@@ -480,14 +487,14 @@ static void key_down(uint32_t k, uint32_t rec)
         key_pattern(pos, rec);
         return;
     }
-    if (ui.dub) {                                /* the black keys are notes, unless REC is held */
+    if (keys_play) {                             /* the black keys are notes, unless REC is held */
         if (rec && pos >= 16u) {
             if (pos - 16u < NTRK) {
                 ui.track = (uint8_t)(pos - 16u);
                 keys_track = ui.track;
                 dub.n = 0;
             }
-        } else if (pos != 16u + SHIFT_BLACK) {
+        } else if (ui.dub && pos != 16u + SHIFT_BLACK) {
             dub_key_down(k);
         }
         return;
@@ -509,8 +516,6 @@ static void key_down(uint32_t k, uint32_t rec)
         }
         return;
     }
-    if (keys_play)
-        return;
     pos += ui.view * 16u;
     if (rec) {
         if (ui.copy_src == NO_KEY)
@@ -794,10 +799,9 @@ static void ui_input(void)
             key_down(k, rec);
             ui.rec_used |= (uint8_t)rec;
         }
-    if (ui.dub)
-        keys_mask = dub_keys_mask(rec);
     if (edges >> B_SEQ & 1u && !ui.dub)
         ui.pattern_mode = !ui.pattern_mode;
+    keys_mask = ui.pattern_mode ? 0u : keys_note_mask(rec);
     if (edges >> B_LFO & 1u || edges >> B_ENV & 1u)
         ui.route_used = 0;
     for (k = 0; k < NGROUPS; k++) {
@@ -869,7 +873,7 @@ static void ui_leds(void)
     }
     fm1_led_key(B_PLAY, keys_play);
     fm1_led_key(B_SEQ, ui.pattern_mode);
-    fm1_led_key(B_REC, ui.sound_copy == SOUND_COPY_CONFIRM ? (int)blink : ui.dub || ((fm1_in.buttons >> B_REC) & 1));
+    fm1_led_key(B_REC, ui.sound_copy == SOUND_COPY_CONFIRM || ui.dub ? (int)blink : (fm1_in.buttons >> B_REC) & 1);
     for (i = 0; i < NGROUPS; i++)
         fm1_led_key(GROUPS[i].button, (!ui.pattern_mode && i == ui.group) || ((GROUPS[i].button == B_LFO || GROUPS[i].button == B_ENV) && fm1_in.buttons >> GROUPS[i].button & 1u));
 }
@@ -1429,6 +1433,24 @@ static void free_perc(const pkt_t *p)
     }
 }
 
+/* 16 steps of what the arp's own order does with C, E and G: a bar per hit, as wide as its gate */
+static void free_arp(const pkt_t *p)
+{
+    enum { STEP_W = 11, BAR_H = 2, SEMITONE_PX = 1 };
+    static const uint8_t CHORD[3] = {0, 4, 7};
+    int32_t mode = clamp(p->v[PV_ARP_MODE], ARP_OFF, ARP_MODES - 1), gate = clamp(p->v[PV_ARP_GATE], 0, 127);
+    uint32_t range = (uint32_t)clamp(p->v[PV_ARP_RANGE], 1, ARP_RANGE_MAX), sixths = arp_rate_sixths(p), hit;
+    if (mode == ARP_OFF) {
+        cv_text(4, 24, &AF_M, "ARP OFF", T_MID);
+        return;
+    }
+    for (hit = 0; hit * sixths < 16u * 6u; hit++) {
+        uint32_t at = arp_position(mode, 3u, range, hit, (hit + 1u) * 2654435761u >> 16);
+        int32_t w = (int32_t)sixths * STEP_W * gate / (6 * 127), semitone = CHORD[at % 3u] + 12 * (int32_t)(at / 3u);
+        cv_rect(4 + (int32_t)(hit * sixths) * STEP_W / 6, CURVE_TOP + CURVE_H - BAR_H - semitone * SEMITONE_PX, w < 1 ? 1 : w, BAR_H, T_THEME);
+    }
+}
+
 #define METER_X (FREE_X + 26u)
 #define METER_W 160u
 #define METER_ROW_Y(i) (FREE_Y + 3u + (i) * 17u)
@@ -1548,7 +1570,7 @@ static void free_page_tabs(const page_t *pg)
 /* the pages whose drawing reads the packet redraw when it changes */
 static int free_reads_packet(const page_t *pg)
 {
-    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_MOD2] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2];
+    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_MOD2] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2] || pg == &PAGES[PG_ARP];
 }
 
 static void draw_free(const page_t *pg, const track_pat_t *t)
@@ -1618,7 +1640,7 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             follower_bar_drawn = 0;
         }
         else if (pg == &PAGES[PG_ARP])
-            cv_text(4, 24, &AF_S, "NOT BUILT", T_MID);
+            free_arp(&p);
         if (ui.sound_copy == SOUND_COPY_NONE)
             free_page_tabs(pg);
         cv_blit(FREE_X, FREE_Y);
@@ -1831,7 +1853,6 @@ static void ui_init(void)
     keys_map_init();
     for (i = 0; i < 16u; i++)
         white_keys |= 1u << white_key[i];
-    keys_mask = white_keys;
     fm1_led_dim_level(0);
     for (i = 0; i < FM1_NCOL; i++)
         fm1_led_dim[i] = 0x1Eu;                  /* LED rows are bits 1..4: every LED glows when it is not lit */

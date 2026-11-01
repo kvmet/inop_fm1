@@ -33,6 +33,9 @@ static void sound_init(sound_t *s, uint32_t fm_alg)
     s->v[PV_SLOT_DST4] = MOD_DST_INDEX;
     s->v[PV_SLOT_AMT4] = 127;
     s->v[PV_PRIO] = PRIO_NORMAL;
+    s->v[PV_ARP_RATE] = ARP_RATE_1_16;
+    s->v[PV_ARP_RANGE] = 1;
+    s->v[PV_ARP_GATE] = 64;
     s->v[PV_E0] = (int8_t)fm_alg;
     s->v[PV_E1] = 2;             /* FM ratios: C 1, A 2, B 1 */
     s->v[PV_E2] = 3;

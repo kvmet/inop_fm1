@@ -18,6 +18,7 @@
 #include "wave_engine.c"
 #include "fx_sends.c"
 #include "voice_steal.c"
+#include "arp.c"
 #define FM1_TICKS_PER_US 24u
 static uint32_t fm1_ticks(void) { return 0; }
 #define __attribute__(x)         /* the section names are the firmware's linker's */
@@ -3952,6 +3953,256 @@ static void test_master_bound(void)
     }
 }
 
+static int8_t arp_heard[64];
+static uint32_t arp_heard_block[64], arp_heard_hold[64], arp_heard_n, arp_now;
+static int8_t arp_heard_cut[64];
+
+static void arp_capture(const pkt_t *p, uint32_t hold_blocks)
+{
+    arp_heard[arp_heard_n] = p->v[PV_NOTE];
+    arp_heard_cut[arp_heard_n] = p->v[PV_FLT_CUT];
+    arp_heard_block[arp_heard_n] = arp_now;
+    arp_heard_hold[arp_heard_n++] = hold_blocks;
+}
+
+static void arp_run(arp_t *a, uint32_t blocks, uint32_t samples_per_step)
+{
+    uint32_t i;
+    for (i = 0; i < blocks; i++, arp_now++)
+        arp_block(a, CTL, samples_per_step, arp_capture);
+}
+
+static void arp_start(arp_t *a, pkt_t *p, int32_t mode, int32_t range)
+{
+    memset(a, 0, sizeof *a);
+    arp_heard_n = 0;
+    arp_now = 0;
+    sound_init(p, 0);
+    p->v[PV_ARP_MODE] = (int8_t)mode;
+    p->v[PV_ARP_RANGE] = (int8_t)range;
+}
+
+static void arp_add(arp_t *a, pkt_t *p, int32_t note)
+{
+    p->v[PV_NOTE] = (int8_t)note;
+    arp_note_on(a, p, ARP_OWNER_STEP, 3200u * 40u, 0);
+}
+
+#define ARP_SPS 3200u   /* 100 blocks */
+
+static void test_arp_modes(void)
+{
+    static const struct { int32_t mode, range; int8_t want[9]; } CASES[] = {
+        {ARP_UP, 1, {60, 64, 67, 60, 64, 67, 60, 64, 67}},
+        {ARP_DOWN, 1, {67, 64, 60, 67, 64, 60, 67, 64, 60}},
+        {ARP_UPDOWN, 1, {60, 64, 67, 64, 60, 64, 67, 64, 60}},
+        {ARP_PLAYED, 1, {64, 60, 67, 64, 60, 67, 64, 60, 67}},
+        {ARP_UP, 2, {60, 64, 67, 72, 76, 79, 60, 64, 67}},
+        {ARP_DOWN, 2, {79, 76, 72, 67, 64, 60, 79, 76, 72}},
+        {ARP_UPDOWN, 2, {60, 64, 67, 72, 76, 79, 76, 72, 67}},
+    };
+    arp_t a;
+    pkt_t p;
+    uint32_t c, i;
+    for (c = 0; c < NELEM(CASES); c++) {
+        arp_start(&a, &p, CASES[c].mode, CASES[c].range);
+        arp_add(&a, &p, 64);
+        arp_add(&a, &p, 60);
+        arp_add(&a, &p, 67);
+        arp_run(&a, 9u * ARP_SPS / CTL, ARP_SPS);
+        CHECK(arp_heard_n >= 9u);
+        for (i = 0; i < 9u; i++)
+            CHECK(arp_heard[i] == CASES[c].want[i]);
+    }
+}
+
+static void test_arp_random_stays_in_the_run(void)
+{
+    arp_t a;
+    pkt_t p;
+    uint32_t i, seen = 0;
+    arp_start(&a, &p, ARP_RANDOM, 2);
+    arp_add(&a, &p, 60);
+    arp_add(&a, &p, 64);
+    arp_run(&a, 30u * ARP_SPS / CTL, ARP_SPS);
+    for (i = 0; i < arp_heard_n; i++) {
+        CHECK(arp_heard[i] == 60 || arp_heard[i] == 64 || arp_heard[i] == 72 || arp_heard[i] == 76);
+        seen |= 1u << ((arp_heard[i] - 60) / 4);
+    }
+    CHECK(seen == (1u << 0 | 1u << 1 | 1u << 3 | 1u << 4));    /* all four come up */
+}
+
+static void test_arp_rate_and_gate(void)
+{
+    arp_t a;
+    pkt_t p;
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_ARP_RATE] = ARP_RATE_1_8T;
+    p.v[PV_ARP_GATE] = 127;
+    arp_add(&a, &p, 60);
+    arp_run(&a, 3u * ARP_SPS * 4u / CTL, ARP_SPS);
+    CHECK(arp_heard_block[0] == 0u);                    /* at once */
+    CHECK(arp_heard_n == 9u);                           /* 12 steps of 1/8T: 3 hits in 4 steps, with no drift */
+    CHECK(arp_heard_block[3] == 400u);
+    CHECK(arp_heard_block[6] == 800u);
+    CHECK(arp_heard_hold[0] == ARP_SPS * 8u / 6u / CTL);
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_ARP_GATE] = 0;
+    arp_add(&a, &p, 60);
+    arp_run(&a, 1u, ARP_SPS);
+    CHECK(arp_heard_hold[0] == 1u);                     /* 0 would mean no end */
+}
+
+static void test_arp_note_length(void)
+{
+    arp_t a;
+    pkt_t p;
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_NOTE] = 60;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, ARP_SPS * 4u, 0);
+    arp_run(&a, 10u * ARP_SPS / CTL, ARP_SPS);
+    CHECK(arp_heard_n == 4u);                           /* LEN 4 at 1/16 */
+    CHECK(a.n == 0u);
+}
+
+/* a tempo with a step that is not a whole number of blocks: each note on a LEN 1 step must find the arp empty and start from the bottom */
+static void test_arp_one_step_notes_restart(void)
+{
+    arp_t a;
+    pkt_t p;
+    uint32_t sps, acc = 0, b, i;
+    for (sps = 2205u; sps < 22050u; sps += 397u) {
+        arp_start(&a, &p, ARP_UP, 2);
+        p.v[PV_NOTE] = 60;
+        acc = 0;
+        for (b = 0; b < 40u * sps / CTL && arp_heard_n < 32u; b++, arp_now++) {
+            if (acc < CTL) {
+                arp_note_on(&a, &p, ARP_OWNER_STEP, sps, 0);
+                acc += sps;
+            }
+            acc -= CTL;
+            arp_block(&a, CTL, sps, arp_capture);
+        }
+        CHECK(arp_heard_n >= 16u);
+        for (i = 0; i < arp_heard_n; i++)
+            CHECK(arp_heard[i] == 60);
+    }
+}
+
+static void test_arp_overlap_and_limit(void)
+{
+    arp_t a;
+    pkt_t p;
+    uint32_t i;
+    arp_start(&a, &p, ARP_UP, 1);
+    for (i = 0; i < 9u; i++)
+        arp_add(&a, &p, 60 + (int32_t)i);
+    CHECK(a.n == ARP_NOTES);
+    CHECK(a.note[0].pkt.v[PV_NOTE] == 61);              /* the oldest went */
+    arp_add(&a, &p, 64);
+    CHECK(a.n == ARP_NOTES);                            /* the same pitch does not double */
+    CHECK(a.note[ARP_NOTES - 1u].pkt.v[PV_NOTE] == 64);
+}
+
+static void test_arp_hits_keep_their_locks(void)
+{
+    arp_t a;
+    pkt_t p;
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_FLT_CUT] = 11;
+    arp_add(&a, &p, 60);
+    p.v[PV_FLT_CUT] = 22;
+    arp_add(&a, &p, 67);
+    arp_run(&a, 2u * ARP_SPS / CTL, ARP_SPS);
+    CHECK(arp_heard[0] == 60 && arp_heard_cut[0] == 11);
+    CHECK(arp_heard[1] == 67 && arp_heard_cut[1] == 22);
+}
+
+static void test_arp_pitch_stops_at_127(void)
+{
+    arp_t a;
+    pkt_t p;
+    arp_start(&a, &p, ARP_UP, 4);
+    arp_add(&a, &p, 120);
+    arp_run(&a, 4u * ARP_SPS / CTL, ARP_SPS);
+    CHECK(arp_heard[3] == 127);
+}
+
+static void test_arp_keys_and_latch(void)
+{
+    arp_t a;
+    pkt_t p;
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_NOTE] = 60;
+    arp_note_on(&a, &p, 3, 0, 0);
+    arp_key_off(&a, 3);
+    CHECK(a.n == 0u);                                   /* no latch: the key ends it */
+    p.v[PV_ARP_LATCH] = 1;
+    arp_note_on(&a, &p, 3, 0, 0);
+    p.v[PV_NOTE] = 64;
+    arp_note_on(&a, &p, 5, 0, 0);
+    arp_key_off(&a, 3);
+    arp_key_off(&a, 5);
+    CHECK(a.n == 2u);                                   /* latched */
+    p.v[PV_NOTE] = 67;
+    arp_note_on(&a, &p, 7, 0, 0);
+    CHECK(a.n == 1u && a.note[0].pkt.v[PV_NOTE] == 67); /* a press with no key down replaces them */
+    p.v[PV_NOTE] = 69;
+    arp_note_on(&a, &p, 8, 0, 0);
+    CHECK(a.n == 2u);                                   /* a key joining one that is down adds to it */
+    arp_key_off(&a, 7);
+    arp_key_off(&a, 8);
+    arp_remove_released(&a);
+    CHECK(a.n == 0u);                                   /* latch turned off */
+}
+
+static void test_arp_held_note(void)
+{
+    arp_t a;
+    pkt_t p;
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_NOTE] = 60;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, 0, 0);
+    arp_run(&a, 50u, ARP_SPS);
+    p.v[PV_NOTE] = 60;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, 0, 0);
+    CHECK(a.n == 1u);
+    arp_run(&a, 51u, ARP_SPS);
+    CHECK(arp_heard_n == 2u);                           /* the same note looping keeps the arp's clock */
+    CHECK(arp_heard_block[1] == 100u);
+    p.v[PV_NOTE] = 67;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, 0, 0);
+    CHECK(a.n == 1u && a.note[0].pkt.v[PV_NOTE] == 67); /* the next note ends a held one */
+    arp_end_held(&a);
+    CHECK(a.n == 0u);
+}
+
+/* the path from a step's trigger to the voices */
+static void test_arp_voice_path(void)
+{
+    pkt_t p;
+    memset(voices, 0, sizeof voices);
+    memset(arps, 0, sizeof arps);
+    sound_init(&p, 0);
+    p.v[PV_LEN] = 4;
+    p.v[PV_ARP_MODE] = ARP_UP;
+    CHECK(voice_trigger_step(&p, 2, 3200u, 1u) == 4u);
+    CHECK(voices_active() == 0u && arps[2].n == 1u);    /* the arp's hit starts the voice, not the step */
+    arp_block(&arps[2], CTL, 3200u, voice_arp_hit);
+    CHECK(voices_active() == 1u);
+    CHECK(voices[0].key == KEY_NONE && voices[0].hold_blocks == 3200u * 64u / 127u / CTL);
+    voices_silence();
+    CHECK(arps[2].n == 0u);
+    p.v[PV_LEN] = (int8_t)LEN_HOLD;
+    voice_trigger_step(&p, 2, 3200u, 1u);
+    CHECK(arps[2].n == 1u);
+    p.v[PV_ARP_MODE] = ARP_OFF;
+    memset(voices, 0, sizeof voices);
+    voice_trigger_step(&p, 2, 3200u, 1u);
+    CHECK(arps[2].n == 0u);                             /* a step with the arp off is the track's next note */
+    CHECK(voices[0].key == KEY_TRACK(2));
+}
+
 int main(void)
 {
     test_resolve_layers();
@@ -4087,6 +4338,17 @@ int main(void)
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();
+    test_arp_modes();
+    test_arp_random_stays_in_the_run();
+    test_arp_rate_and_gate();
+    test_arp_note_length();
+    test_arp_one_step_notes_restart();
+    test_arp_overlap_and_limit();
+    test_arp_hits_keep_their_locks();
+    test_arp_pitch_stops_at_127();
+    test_arp_keys_and_latch();
+    test_arp_held_note();
+    test_arp_voice_path();
     test_step_copy();
     test_step_clear_locks();
     printf("sizeof(pattern_t) %zu, 27 patterns %zu KB, pool %zu B\n", sizeof(pattern_t),
