@@ -48,7 +48,7 @@ static void track_init(track_pat_t *t, uint32_t base)
         s->vel = STEP_INHERIT;
         s->len = STEP_INHERIT;
         s->sound = SOUND_NONE;
-        s->chance = 100;
+        s->chance = STEP_CHANCE_ALWAYS;
         s->cond = 0;
         s->ratchet = 0;
     }
@@ -122,6 +122,29 @@ static void lock_clear_step(track_pat_t *t, uint32_t step)
     lock_clear_range(t, lock_lower(t, step, 0), lock_lower(t, step + 1u, 0));
 }
 
+/* each engine's values start here, so a new engine sounds at once */
+static const int8_t ENGINE_DEFAULTS[ENGINES][ENGINE_VALUES] = {
+    [ENGINE_FM] = {0, 2, 3, 2, 40, 0, 0, 0},
+    [ENGINE_PERC] = {1, 0, 64, 64, 20, 20, 100, 0},      /* SKIN */
+    [ENGINE_SWARM] = {0, 40, 0, 0, 100, 0, 20, 0},
+    [ENGINE_WAVE] = {0, 64, 0, 0, 0, 0, 0, 0},
+};
+
+/* the same values mean different things to each engine, so a knob swept across the engines must not rewrite them */
+static void sound_set_engine(sound_t *s, engine_memory_t *m, int32_t next)
+{
+    int32_t cur = s->v[PV_ENGINE];
+    uint32_t i;
+    if (next == cur)
+        return;
+    for (i = 0; i < ENGINE_VALUES; i++)
+        m->v[cur][i] = s->v[PV_E0 + i];
+    m->seen |= (uint8_t)(1u << cur);
+    for (i = 0; i < ENGINE_VALUES; i++)
+        s->v[PV_E0 + i] = m->seen >> next & 1u ? m->v[next][i] : ENGINE_DEFAULTS[next][i];
+    s->v[PV_ENGINE] = (int8_t)next;
+}
+
 static uint32_t step_lock_count(const track_pat_t *t, uint32_t step)
 {
     return lock_lower(t, step + 1u, 0) - lock_lower(t, step, 0);
@@ -131,7 +154,7 @@ static uint32_t step_lock_count(const track_pat_t *t, uint32_t step)
 static int step_locked(const track_pat_t *t, uint32_t step)
 {
     const step_t *s = &t->steps[step];
-    return s->sound != SOUND_NONE || s->note != STEP_INHERIT || s->vel != STEP_INHERIT || s->len != STEP_INHERIT || step_lock_count(t, step);
+    return s->sound != SOUND_NONE || s->note != STEP_INHERIT || s->vel != STEP_INHERIT || s->len != STEP_INHERIT || s->chance != STEP_CHANCE_ALWAYS || step_lock_count(t, step);
 }
 
 /* base sound, then the step's sound lock, then the step's locks */

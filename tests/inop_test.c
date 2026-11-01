@@ -148,6 +148,80 @@ static void test_step_inherits_from_sound(void)
     CHECK(p.v[PV_NOTE] == 50);                          /* editing the sound moves every step that has not set its own */
 }
 
+static uint32_t stop_emits, stop_last_step;
+static void stop_emit(uint32_t track, uint32_t step, const track_pat_t *t)
+{
+    (void)track;
+    (void)t;
+    stop_emits++;
+    stop_last_step = step;
+}
+
+static void test_stop_and_start(void)
+{
+    seq_t q;
+    track_pat_t *t = &patterns[0].track[0];
+    uint32_t i;
+    reset();
+    seq_init(&q, 120);
+    t->steps[0].on = 1;
+    t->steps[3].on = 1;
+    t->steps[0].chance = t->steps[3].chance = 100;
+    seq_block(&q, patterns, q.samples_per_step * 2u + 1u, stop_emit);
+    CHECK(q.pos[0] == 2);
+    seq_stop(&q);
+    CHECK(q.pos[0] == 0 && q.count == 0 && q.sample_acc == 0);
+    stop_emits = 0;
+    for (i = 0; i < 40u; i++)
+        seq_block(&q, patterns, q.samples_per_step, stop_emit);
+    CHECK(stop_emits == 0 && q.pos[0] == 0);            /* stopped: no triggers and no movement */
+    q.next = 2;
+    seq_start(&q);
+    CHECK(q.playing == 2);                              /* a pattern chosen while stopped does not wait */
+    patterns[2].track[0].steps[0].on = 1;
+    seq_block(&q, patterns, 1, stop_emit);
+    CHECK(stop_emits == 1 && stop_last_step == 0 && q.pos[0] == 0);   /* step 1 sounds on the first block */
+    seq_block(&q, patterns, 1, stop_emit);
+    CHECK(stop_emits == 1);                             /* and once */
+}
+
+static void test_engine_memory(void)
+{
+    sound_t s;
+    engine_memory_t m;
+    memset(&m, 0, sizeof m);
+    sound_init(&s, 3);
+    s.v[PV_E4] = 99;
+    sound_set_engine(&s, &m, ENGINE_FM);
+    CHECK(s.v[PV_E4] == 99);                            /* no change of engine, no change of values */
+    sound_set_engine(&s, &m, ENGINE_WAVE);
+    CHECK(s.v[PV_ENGINE] == ENGINE_WAVE && s.v[PV_E4] == ENGINE_DEFAULTS[ENGINE_WAVE][4] && s.v[PV_E1] == 64);
+    s.v[PV_E1] = 10;
+    sound_set_engine(&s, &m, ENGINE_PERC);
+    CHECK(s.v[PV_E0] == PERC_SKIN);
+    sound_set_engine(&s, &m, ENGINE_FM);
+    CHECK(s.v[PV_E4] == 99 && s.v[PV_E0] == 3);         /* sweeping back restores */
+    sound_set_engine(&s, &m, ENGINE_WAVE);
+    CHECK(s.v[PV_E1] == 10);
+}
+
+static void test_voices_silence(void)
+{
+    pkt_t p;
+    int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, rv[CTL] = {0};
+    uint32_t i;
+    sound_init(&p, 0);
+    for (i = 0; i < NVOICE; i++)
+        voices[i].active = 0;
+    voice_budget = 0xFFFFFFFFu;
+    voice_trigger(&p, KEY_NONE, 0);
+    CHECK(voices_active() == 1);
+    voices_silence();
+    for (i = 0; i < 100u; i++)
+        voices_render(l, r, d, rv);
+    CHECK(voices_active() == 0);
+}
+
 static void test_step_locked(void)
 {
     track_pat_t *t = &patterns[0].track[0];
@@ -166,6 +240,8 @@ static void test_step_locked(void)
     lock_set(t, 9, PV_FLT_CUT, 10);
     lock_set(t, 9, PV_PAN, 10);
     CHECK(step_lock_count(t, 9) == 2);
+    t->steps[11].chance = 50;
+    CHECK(step_locked(t, 11));                          /* a changed chance counts */
 }
 
 static void test_sound_use_count(void)
@@ -2403,6 +2479,9 @@ int main(void)
     test_steal_order();
     test_priority_across_voices();
     test_master_bound();
+    test_stop_and_start();
+    test_engine_memory();
+    test_voices_silence();
     printf("sizeof(pattern_t) %zu, 27 patterns %zu KB, pool %zu B\n", sizeof(pattern_t),
            NPATTERN * sizeof(pattern_t) / 1024, sizeof pool);
     printf(fails ? "FAILED: %d\n" : "ok\n", fails);

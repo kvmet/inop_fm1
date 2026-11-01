@@ -172,6 +172,15 @@ static void voices_hold_service(const pattern_t *pattern)
     voice_release_key(KEY_TRACK(k));
 }
 
+static void voices_silence(void)
+{
+    uint32_t i;
+    for (i = 0; i < NVOICE; i++) {
+        voices[i].has_next = 0;
+        voice_fade(&voices[i]);
+    }
+}
+
 static uint32_t voices_active(void)
 {
     uint32_t i, n = 0;

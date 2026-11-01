@@ -54,6 +54,9 @@ enum { G_DELAY_TIME, G_DELAY_FB, G_REVERB_SIZE, G_REVERB_DAMP, G_COUNT };
 enum { ENGINE_FM, ENGINE_PERC, ENGINE_SWARM, ENGINE_WAVE, ENGINES };
 enum { PRIO_XXLOW, PRIO_XLOW, PRIO_LOW, PRIO_NORMAL, PRIO_HIGH, PRIO_XHIGH, PRIO_XXHIGH, PRIOS };
 typedef pkt_t sound_t;           /* a pool sound is a packet with no step applied */
+#define ENGINE_VALUES (PV_E7 - PV_E0 + 1)
+typedef struct { uint8_t seen; int8_t v[ENGINES][ENGINE_VALUES]; } engine_memory_t;   /* seen: a bit per engine that v holds */
+#define STEP_CHANCE_ALWAYS 100u
 
 typedef struct {
     uint8_t on, note, vel, len;  /* STEP_INHERIT, or this step's own. len: steps a note holds */

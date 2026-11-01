@@ -17,7 +17,7 @@ enum { E_SELECT = 0, E_ALGO = 1, E_PRESETS = 6, E_K1 = 2 };
 static const uint8_t KNOB_ENC[NKNOB] = {E_SELECT, E_K1, E_K1 + 1, E_K1 + 2, E_K1 + 3, E_ALGO};
 
 /* values that belong to the panel and not to a sound */
-enum { ID_BPM = ID_GLOBAL(G_COUNT), ID_SLOT, ID_LENGTH, ID_BASE, ID_NONE = 0xFF };
+enum { ID_BPM = ID_GLOBAL(G_COUNT), ID_SLOT, ID_LENGTH, ID_BASE, ID_CHANCE, ID_NONE = 0xFF };
 
 typedef struct { const char *name; uint8_t id[NKNOB]; const char *label[NKNOB]; } page_t;
 static const page_t PAGES[] = {
@@ -32,10 +32,15 @@ static const page_t PAGES[] = {
     {"ENG1", {PV_ENGINE, PV_E1, PV_E2, PV_E3, PV_E4, PV_E0}, {"ENGINE", "E1", "E2", "E3", "E4", "E0"}},
     {"ENG2", {ID_NONE, PV_E5, PV_E6, PV_E7, ID_NONE, ID_NONE}, {"", "E5", "E6", "E7", "", ""}},
     {"GLOB", {ID_BPM, ID_GLOBAL(G_DELAY_TIME), ID_GLOBAL(G_DELAY_FB), ID_GLOBAL(G_REVERB_SIZE), ID_GLOBAL(G_REVERB_DAMP), ID_NONE}, {"BPM", "DLY T", "DLY FB", "SIZE", "DAMP", ""}},
+    {"STEP", {ID_NONE, ID_CHANCE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "CHANCE", "", "", "", ""}},
+    {"MAST", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
+    {"SYS", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
+    {"ARP", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
+    {"SAVE", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_NONE, ID_NONE, ID_NONE}, {"", "LENGTH", "SOUND", "", "", ""}},
 };
 
-enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_TRACK };
+enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
 _Static_assert(PG_TRACK + 1 == NELEM(PAGES), "PG_ names follow PAGES");
 
 /* a page button's first press shows its group's last page; each next press moves through the group */
@@ -43,11 +48,13 @@ typedef struct { uint8_t button, n, page[3]; } page_group_t;
 static const page_group_t GROUPS[] = {
     {B_HOME, 1, {PG_HOME}},
     {B_SEL, 2, {PG_E1, PG_E2}},
-    {B_ARP, 1, {PG_FILTER}},
+    {B_EDIT, 1, {PG_STEP}},
     {B_ENV, 2, {PG_AMP, PG_MOD}},
-    {B_FX, 1, {PG_FX}},
+    {B_FX, 2, {PG_FILTER, PG_FX}},
     {B_LFO, 3, {PG_LFO1, PG_LFO2, PG_SLOTS}},
-    {B_GLO, 1, {PG_GLOBAL}},
+    {B_GLO, 3, {PG_GLOBAL, PG_MASTER, PG_SYSTEM}},
+    {B_ARP, 1, {PG_ARP}},
+    {B_SAVE, 1, {PG_SAVE}},
 };
 #define NGROUPS NELEM(GROUPS)
 
@@ -79,6 +86,7 @@ static struct {
     uint8_t sound_copy, sound_to;
     uint8_t dub, dub_prev_play;  /* overdub on, and the keys' state to return to */
     uint8_t play_used;           /* this PLAY press already acted: its release must not toggle the keys */
+    uint8_t rec_used;            /* this REC press already acted: its release is not a tap */
     uint32_t bpm, rec_t0, held_keys, track_t0;
     uint32_t drop_seen, drop_t0;
 } ui;
@@ -114,6 +122,7 @@ static void page_button(uint32_t g)
     ui.pattern_mode = 0;
 }
 
+static engine_memory_t engine_memory[NSOUND];
 static dub_t dub;
 static struct { track_pat_t *t; uint32_t t0; uint8_t step; } dub_note[27];
 
@@ -146,6 +155,8 @@ static int32_t ui_value(uint32_t id)
         return ui_track()->length;
     if (id == ID_BASE)
         return ui_track()->base + 1;
+    if (id == ID_CHANCE)
+        return held_first ? held_first->t->steps[held_first->step].chance : 0;
     if (id >= PV_COUNT)
         return globals[id - PV_COUNT];
     ui_packet(&p);
@@ -213,6 +224,8 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, 1, NSTEP);
     if (id == ID_BASE)
         return clamp(v, 1, NSOUND);
+    if (id == ID_CHANCE)
+        return clamp(v, 0, STEP_CHANCE_ALWAYS);
     if (id == ID_GLOBAL(G_DELAY_TIME))
         return clamp(v, 1, 16);                  /* in steps */
     if (id == PV_VEL)
@@ -264,12 +277,14 @@ static void dub_service(uint32_t rec)
     ui.edit_pat = seq.playing;
 }
 
+/* REC + a track key picks the track in overdub, so that press must not also play the black key's note */
+static uint32_t dub_keys_mask(uint32_t rec) { return rec ? white_keys : ((1u << 27) - 1u) & ~(1u << black_key[SHIFT_BLACK]); }
+
 static void dub_enter(void)
 {
     ui.dub = 1;
     ui.dub_prev_play = keys_play;
     keys_play = 1;
-    keys_mask = ((1u << 27) - 1u) & ~(1u << black_key[SHIFT_BLACK]);
     ui.pattern_mode = 0;
     ui.edit_pat = seq.playing;
     ui.sound_copy = SOUND_COPY_NONE;
@@ -323,6 +338,14 @@ static void ui_knob(uint32_t id, int32_t delta)
         seq_set_bpm(&seq, ui.bpm);
     } else if (id == ID_SLOT) {
         ui.slot = (uint8_t)panel;
+    } else if (id == ID_CHANCE) {
+        for (i = 0; i < NELEM(held); i++)
+            if (held[i].t) {
+                step_t *s = &held[i].t->steps[held[i].step];
+                s->chance = (uint8_t)value_clamp(id, s->chance + delta);
+                s->on = 1;
+                held[i].used = 1;
+            }
     } else if (id == ID_LENGTH) {
         track_pat_t *t = ui_track();
         uint32_t irq = irq_save();
@@ -342,7 +365,10 @@ static void ui_knob(uint32_t id, int32_t delta)
         track_pat_t *t = ui_track();
         int8_t v = (int8_t)value_clamp(id, sounds[t->base].v[id] + delta);
         uint32_t irq = irq_save();
-        sounds[t->base].v[id] = v;
+        if (id == PV_ENGINE)
+            sound_set_engine(&sounds[t->base], &engine_memory[t->base], v);
+        else
+            sounds[t->base].v[id] = v;
         irq_restore(irq);
     }
 }
@@ -388,6 +414,7 @@ static void sound_copy_commit(void)
     track_pat_t *t = ui_track();
     uint32_t irq = irq_save();
     sounds[ui.sound_to] = sounds[t->base];
+    engine_memory[ui.sound_to] = engine_memory[t->base];
     t->base = ui.sound_to;
     irq_restore(irq);
 }
@@ -414,9 +441,16 @@ static void key_down(uint32_t k, uint32_t rec)
         key_pattern(pos, rec);
         return;
     }
-    if (ui.dub) {                                /* the track stays selected, so the black keys are notes */
-        if (pos != 16u + SHIFT_BLACK)
+    if (ui.dub) {                                /* the black keys are notes, unless REC is held */
+        if (rec && pos >= 16u) {
+            if (pos - 16u < NTRK) {
+                ui.track = (uint8_t)(pos - 16u);
+                keys_track = ui.track;
+                dub.n = 0;
+            }
+        } else if (pos != 16u + SHIFT_BLACK) {
             dub_key_down(k);
+        }
         return;
     }
     if (pos >= 16u) {                            /* black keys */
@@ -484,8 +518,10 @@ static void sound_copy_confirm(uint32_t edges, uint32_t pressed)
     uint32_t i, other = (edges & ~(1u << B_REC)) | pressed;
     for (i = 0; i < FM1_NENC; i++)
         other |= fm1_enc_take(i) != 0;
-    if (edges >> B_REC & 1u)
+    if (edges >> B_REC & 1u) {
         sound_copy_commit();
+        ui.rec_used = 1;
+    }
     if (other || edges >> B_REC & 1u)
         ui.sound_copy = SOUND_COPY_NONE;
 }
@@ -519,6 +555,18 @@ static void oct_button(int32_t dir)
         ui.view--;
 }
 
+static void transport_toggle(void)
+{
+    uint32_t irq = irq_save();
+    if (seq.run == SEQ_STOPPED) {
+        seq_start(&seq);
+    } else {
+        seq_stop(&seq);
+        voices_silence();
+    }
+    irq_restore(irq);
+}
+
 static void ui_input(void)
 {
     uint32_t released, edges = fm1_input_edges(&released), now = fm1_in.notes, changed = now ^ ui.held_keys, k;
@@ -540,24 +588,32 @@ static void ui_input(void)
         return;
     }
     if (edges >> B_PLAY & 1u) {
-        ui.play_used = ui.dub || rec;
-        if (ui.dub)
+        ui.play_used = ui.dub || ui_shift();
+        if (ui_shift())
+            transport_toggle();
+        else if (ui.dub)
             dub_exit();
-        else if (rec)
-            dub_enter();
-    } else if (edges >> B_REC & 1u && fm1_in.buttons >> B_PLAY & 1u && !ui.dub) {
-        ui.play_used = 1;
-        dub_enter();
     }
-    if (released >> B_REC & 1u && ui.sound_copy == SOUND_COPY_CHOOSE)
-        ui.sound_copy = ui.sound_to != ui_track()->base ? SOUND_COPY_CONFIRM : SOUND_COPY_NONE;
+    if (released >> B_REC & 1u) {
+        if (ui.sound_copy == SOUND_COPY_CHOOSE)
+            ui.sound_copy = ui.sound_to != ui_track()->base ? SOUND_COPY_CONFIRM : SOUND_COPY_NONE;
+        else if (!ui.rec_used && fm1_ms - ui.rec_t0 < HOLD_MS && ui.dub)
+            dub_exit();
+        else if (!ui.rec_used && fm1_ms - ui.rec_t0 < HOLD_MS)
+            dub_enter();
+    }
     if (edges >> B_REC & 1u) {
         ui.rec_t0 = fm1_ms;
         ui.copy_src = NO_KEY;
+        ui.rec_used = 0;
     }
     for (k = 0; k < 27u; k++)
-        if (pressed >> k & 1u)
-            key_down(k, rec && !ui.dub);
+        if (pressed >> k & 1u) {
+            key_down(k, rec);
+            ui.rec_used |= (uint8_t)rec;
+        }
+    if (ui.dub)
+        keys_mask = dub_keys_mask(rec);
     if (edges >> B_SEQ & 1u && !ui.dub)
         ui.pattern_mode = !ui.pattern_mode;
     for (k = 0; k < NGROUPS; k++)
@@ -568,8 +624,10 @@ static void ui_input(void)
     if (edges >> B_OCTDN & 1u)
         oct_button(-1);
     d = fm1_enc_take(E_PRESETS) * shift;
-    if (d)
+    if (d) {
         presets_knob(d, rec && !ui.dub);
+        ui.rec_used |= (uint8_t)rec;
+    }
     pg = ui_page();
     for (k = 0; k < NKNOB; k++) {
         d = fm1_enc_take(KNOB_ENC[k]);
@@ -577,6 +635,7 @@ static void ui_input(void)
             int32_t count;
             uint32_t id = page_id(pg, k);
             ui_knob(id, value_names(id, &count) ? d : d * shift);   /* a selector's short list would jump to its end */
+            ui.rec_used |= (uint8_t)rec;
         }
     }
     if (ui.dub)
@@ -839,9 +898,12 @@ static void draw_grid(void)
 static void draw_counter(void)
 {
     char b[48];
-    char *s = put_int(b, seq.plays + 1);
-    s = put_text(s, ".");
-    put_int(s, (int32_t)seq.count + 1);
+    char *s = put_text(b, "STOP");
+    if (seq.run != SEQ_STOPPED) {
+        s = put_int(b, seq.plays + 1);
+        s = put_text(s, ".");
+        put_int(s, (int32_t)seq.count + 1);
+    }
     ui_text(LINE_COUNTER, 161, 1, 38, &AF_M, b, T_TEXT, ALIGN_CENTER);
 }
 
@@ -859,7 +921,9 @@ static void value_text(char *b, uint32_t id)
     int32_t count;
     const char *const *names;
     names = value_names(id, &count);
-    if (names)
+    if (id == ID_CHANCE && !held_first)
+        b[0] = 0;
+    else if (names)
         put_text(b, names[clamp(ui_value(id), 0, count - 1)]);
     else if (id == PV_LEN && ui_value(id) == (int32_t)LEN_HOLD)
         put_text(b, "HOLD");
@@ -1208,6 +1272,12 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
         key = hash_mix(key, ui.slot);
         for (i = 0; i < PV_COUNT; i++)
             key = hash_mix(key, (uint8_t)p.v[i]);
+    } else if (pg == &PAGES[PG_STEP]) {
+        key = hash_mix(key, held_first != 0);
+    } else if (pg == &PAGES[PG_SYSTEM]) {
+        key = hash_mix(key, audio_late);
+        key = hash_mix(key, voices_stolen);
+        key = hash_mix(key, voices_dropped);
     }
     if (!free_valid || key != drawn_key) {
         cv_begin(FREE_W, FREE_H, T_BG);
@@ -1233,8 +1303,14 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             free_wave(&p);
         else if (pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2])
             free_fm_chart(&p);
-        else if (pg == &PAGES[PG_GLOBAL])
+        else if (pg == &PAGES[PG_SYSTEM])
             free_voices();
+        else if (pg == &PAGES[PG_STEP] && !held_first)
+            cv_text(4, 24, &AF_M, "HOLD A STEP", T_MID);
+        else if (pg == &PAGES[PG_SAVE])
+            cv_text(4, 24, &AF_S, "NOT BUILT: POWER OFF LOSES ALL", T_ACCENT);
+        else if (pg == &PAGES[PG_MASTER] || pg == &PAGES[PG_ARP])
+            cv_text(4, 24, &AF_S, "NOT BUILT", T_MID);
         if (ui.sound_copy == SOUND_COPY_NONE)
             free_page_tabs(pg);
         cv_blit(FREE_X, FREE_Y);
@@ -1265,7 +1341,7 @@ static void draw_title(const page_t *pg)
         draw_dub_word();
     else
         line_drawn[LINE_DUB].text[0] = 0;
-    s = put_text(b, ui.dub ? "" : ui.pattern_mode ? "PATT " : keys_play ? "PLAY " : "COMP ");
+    s = put_text(b, ui.dub ? "" : ui.pattern_mode ? "PATT " : keys_play ? "NOTES " : "STEPS ");
     s = put_text(s, pg->name);
     s = put_text(s, " T");
     s = put_int(s, ui.track + 1);

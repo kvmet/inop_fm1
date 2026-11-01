@@ -1,14 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* The sequencer: it never stops. Tracks wrap on their own lengths. A committed pattern starts when the playing pattern's
+/* The sequencer: it runs until a player stops it. Tracks wrap on their own lengths. A committed pattern starts when the playing pattern's
  * longest track completes, and only then does every track start from step 1. No hardware here: tests/inop_test.c runs this on the host. */
 #define SEQ_PLAYS 64u
 #define SEQ_NOT_FIRED 0xFFu
+enum { SEQ_RUNNING, SEQ_STOPPED, SEQ_STARTING };
 
 typedef struct {
     uint32_t sample_acc, samples_per_step;
     uint32_t count;              /* steps since the playing pattern started */
     uint8_t playing, next;       /* pattern indices; equal when no switch waits */
     uint8_t plays;               /* completed plays of the playing pattern, modulo SEQ_PLAYS */
+    uint8_t run;
     uint8_t pos[NTRK];
     uint8_t fired[NTRK];         /* the step of each track's last trigger, or SEQ_NOT_FIRED */
     uint8_t skip[NTRK];          /* step + 1: this step already sounded when it was played in, so its next trigger is dropped */
@@ -20,18 +22,24 @@ typedef void (*seq_emit_t)(uint32_t track, uint32_t step, const track_pat_t *t);
 
 static void seq_set_bpm(seq_t *q, uint32_t bpm) { q->samples_per_step = FS * 15u / bpm; }
 
-static void seq_init(seq_t *q, uint32_t bpm)
+static void seq_rewind(seq_t *q)
 {
     uint32_t i;
     q->sample_acc = 0;
     q->count = 0;
     q->plays = 0;
-    q->playing = q->next = 0;
     for (i = 0; i < NTRK; i++) {
         q->pos[i] = 0;
         q->skip[i] = 0;
         q->fired[i] = SEQ_NOT_FIRED;
     }
+}
+
+static void seq_init(seq_t *q, uint32_t bpm)
+{
+    seq_rewind(q);
+    q->run = SEQ_RUNNING;
+    q->playing = q->next = 0;
     q->rng = 0x13579BDFu;
     seq_set_bpm(q, bpm);
 }
@@ -101,9 +109,28 @@ static uint32_t seq_nearest_step(const seq_t *q, uint32_t track, uint32_t length
     return q->sample_acc * 2u < q->samples_per_step ? q->pos[track] : (q->pos[track] + 1u) % length;
 }
 
+static void seq_stop(seq_t *q)
+{
+    seq_rewind(q);
+    q->run = SEQ_STOPPED;
+}
+
+/* a pattern chosen while stopped starts now: no pattern is playing that it must wait for */
+static void seq_start(seq_t *q)
+{
+    q->playing = q->next;
+    q->run = SEQ_STARTING;
+}
+
 /* call once for each render block */
 static void seq_block(seq_t *q, const pattern_t *patterns, uint32_t samples, seq_emit_t emit)
 {
+    if (q->run == SEQ_STOPPED)
+        return;
+    if (q->run == SEQ_STARTING) {
+        q->run = SEQ_RUNNING;
+        seq_fire(q, &patterns[q->playing], emit);
+    }
     q->sample_acc += samples;
     while (q->sample_acc >= q->samples_per_step) {
         q->sample_acc -= q->samples_per_step;
