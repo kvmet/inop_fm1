@@ -52,7 +52,7 @@ Each voice runs from its packet in this order: engine, drive, shaper, bit crush,
 - **Effects per trigger:** cheap distortion, such as a wave shaper, bit crush and sample rate reduction.
 - **Shared effects, reached by sends:** delay, reverb and a higher quality distortion.
 - **Master:** in order: tilt, compressor, width, drive, limiter, soft clip, volume. See Master below.
-- **Envelope follower sends:** a voice sends to a follower instead of an audio output. The follower is a modulation source for any voice.
+- **Envelope follower send:** a voice sends to the follower, and the follower is a modulation source for every voice. See Follower below.
 
 Shared effects and the master have a fixed CPU cost, which is reserved before voices get budget. A SWARM voice costs more at higher notes and with Sync, since its work follows its waveform edges. It is charged for its note. The System page shows what each engine, effect and shared stage costs.
 
@@ -60,10 +60,21 @@ Shared effects and the master have a fixed CPU cost, which is reserved before vo
 
 - Each packet has free modulation slots. A slot holds a source, a destination and an amount.
 - A packet has 8 slots. Routes to one destination add up.
-- The sources are mod envelope 1, mod envelope 2, LFO 1, LFO 2, velocity and random. Random draws one value per trigger and holds it for the note, from -1 to 1 of full scale.
+- The sources are mod envelope 1, mod envelope 2, LFO 1, LFO 2, velocity, random and the follower. Random draws one value per trigger and holds it for the note, from -1 to 1 of full scale.
 - The destinations are pitch, cutoff, resonance, level, pan, drive, shaper, bit crush, rate reduce, timbre, FM index and the rate of each LFO. A rate route works in retrigger mode only: a free LFO keeps its rate. An amount of 127 and a full source move a value by 127; pitch moves 16 semitones.
 - A new sound starts with mod envelope 1 to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to cutoff, all at amount 0, and mod envelope 1 to FM index at 127. Each slot can be changed.
 - **FM index:** routes to it scale the index, so the index knobs set the most it can reach, and an envelope at 127 reaches that at its peak. With no route, the index stays at its knobs. A route with amount 0 closes it. To have no route, set its source to off.
+
+## Follower
+
+The follower turns audio into a modulation source, such as a kick that ducks the pads.
+
+- **Send:** FOLLOW on the Sends page sets how much of a voice goes to the follower. The send is taken after the amp envelope and before LEVEL, so a track at level 0 can still drive it. The loudest send of a block wins.
+- **Source:** `FOL` in a mod slot goes from 0 to full. Route it to `LVL` with a negative amount to duck.
+- **Timing:** ATK and REL on the Follower page set its attack, 0.7 to 186 ms, and its release, 29 ms to 1.8 s. They are project values. Every voice reads the value of the block before, so it reads 0.7 ms late, whatever the voice's place among the voices.
+- **Follower page:** a bar shows the follower's level.
+
+There is one follower.
 
 ## Packet
 
@@ -76,12 +87,13 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 | Mod envelope 1, Mod envelope 2 | | attack | decay | sustain | release | |
 | Filter | | type | cutoff | resonance | key tracking | |
 | Effects | delay send | shaper | bit crush | rate reduce | drive | reverb send |
+| Sends | | delay send | reverb send | follower send | | |
 | LFO 1, LFO 2 | | shape | phase mode | rate | start phase | |
 | Mod slots | slot number | source | destination | amount | | |
 | Engine 1 | engine | E1 | E2 | E3 | E4 | patch or model |
 | Engine 2 | | E5 | E6 | E7 | | |
 
-The engine sets what the 8 engine values mean. The mod slots page lists all 8 routes. The distortion and follower sends have no knob until they do something.
+The engine sets what the 8 engine values mean. The mod slots page lists all 8 routes. The distortion send has no knob until it does something.
 
 Delay and reverb settings are project values and are not in the packet. The Global page shows them and the tempo.
 
@@ -187,8 +199,8 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | SEL | Engine 1, Engine 2 |
 | EDIT | Step |
 | ENV | Amp envelope, Mod envelope 1, Mod envelope 2 |
-| FX | Filter, Effects |
-| LFO | LFO 1, LFO 2, Mod slots |
+| FX | Filter, Effects, Sends |
+| LFO | LFO 1, LFO 2, Mod slots, Follower |
 | GLO | Global, Master, System |
 | ARP | Arp (reserved for a Perform and Arp group) |
 | SAVE | Save |
@@ -309,6 +321,7 @@ The amp envelope means the same as on every other engine:
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
 - Multiband compression on the master.
+- A second envelope follower, for separate sidechains.
 
 ## Open
 
@@ -316,5 +329,4 @@ The amp envelope means the same as on every other engine:
 - Whether a step holds several notes, for recording and chords. Decide this before saving to flash.
 
 - Bug to find: with a NORM snare firing on every step, a kick at HIGH did not fire every time. A trigger of higher priority should take a lower one on any track, and a test of that rule on the voice pool passes.
-- How many envelope followers there are.
 - How much lock storage a track gets. A track with every step locked must fit.

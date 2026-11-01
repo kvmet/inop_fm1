@@ -43,6 +43,8 @@ typedef struct {
 } chain_t;
 
 static uint32_t mod_rng = 0x2F6E2B1u;
+static int32_t follower_input;   /* Q15: the loudest send of this block */
+static int32_t follower_level;   /* Q15: what MOD_SRC_FOLLOW reads, so every voice in a block reads the same value */
 
 static AUDIO_INLINE int32_t mod_random(void)
 {
@@ -345,6 +347,7 @@ static AUDIO_INLINE void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
     src[MOD_SRC_LFO2] = lfo_block(&c->lfo[1], clock);
     src[MOD_SRC_VEL] = clamp(p->v[PV_VEL], 0, 127) * 258;
     src[MOD_SRC_RANDOM] = c->random;
+    src[MOD_SRC_FOLLOW] = follower_level;
     for (i = 0; i < MOD_DSTS; i++)
         c->off[i] = 0;
     for (i = 0; i < MOD_SLOTS; i++) {
@@ -447,6 +450,21 @@ static AUDIO_INLINE void chain_filter(chain_t *c, uint32_t type, int32_t *x)
     }
 }
 
+/* after the amp envelope and before LEVEL, so a silent track can still drive it */
+static AUDIO_INLINE void chain_follow_send(const chain_t *c, const int32_t *x, int32_t send)
+{
+    int32_t peak = 0, level;
+    uint32_t i;
+    for (i = 0; i < CTL; i++) {
+        int32_t a = x[i] < 0 ? -x[i] : x[i];
+        peak = a > peak ? a : peak;
+    }
+    level = clamp(peak, 0, SHAPE_FULL) * (32768 / SHAPE_FULL);
+    level = ((level * (c->amp_env.env >> 9)) >> 15) * send >> 7;
+    if (level > follower_input)
+        follower_input = level;
+}
+
 /* adds one block to l, r and the send buses; x is the engine's block and is overwritten. 0 when the envelope has ended */
 static AUDIO_INLINE int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int32_t *r, int32_t *delay_bus, int32_t *reverb_bus)
 {
@@ -462,6 +480,8 @@ static AUDIO_INLINE int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int
         chain_filter_update(c, p);
     chain_filter(c, (uint32_t)clamp(p->v[PV_FLT_TYPE], 0, FLT_TYPES - 1), x);
     env_block(&c->amp_env);
+    if (p->v[PV_SEND_FOLLOW] > 0)
+        chain_follow_send(c, x, p->v[PV_SEND_FOLLOW]);
     amp = ((c->amp_env.env >> 9) * lvl) >> 12;
     target_l = (amp * gl) >> 12;
     target_r = (amp * gr) >> 12;

@@ -33,6 +33,8 @@ static const page_t PAGES[] = {
     {"ENG1", {PV_ENGINE, PV_E1, PV_E2, PV_E3, PV_E4, PV_E0}, {"ENGINE", "E1", "E2", "E3", "E4", "E0"}},
     {"ENG2", {ID_NONE, PV_E5, PV_E6, PV_E7, ID_NONE, ID_NONE}, {"", "E5", "E6", "E7", "", ""}},
     {"GLOB", {ID_BPM, ID_GLOBAL(G_DELAY_TIME), ID_GLOBAL(G_DELAY_FB), ID_GLOBAL(G_REVERB_SIZE), ID_GLOBAL(G_REVERB_DAMP), ID_NONE}, {"BPM", "DLY T", "DLY FB", "SIZE", "DAMP", ""}},
+    {"SEND", {ID_NONE, PV_SEND_DELAY, PV_SEND_REVERB, PV_SEND_FOLLOW, ID_NONE, ID_NONE}, {"", "DELAY", "REVERB", "FOLLOW", "", ""}},
+    {"FOL", {ID_NONE, ID_GLOBAL(G_FOL_ATTACK), ID_GLOBAL(G_FOL_RELEASE), ID_NONE, ID_NONE, ID_NONE}, {"", "ATK", "REL", "", "", ""}},
     {"STEP", {ID_NONE, ID_CHANCE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "CHANCE", "", "", "", ""}},
     {"MAST", {ID_GLOBAL(G_MST_WIDTH), ID_GLOBAL(G_MST_COMP), ID_GLOBAL(G_MST_ATTACK), ID_GLOBAL(G_MST_RELEASE), ID_GLOBAL(G_MST_TILT), ID_GLOBAL(G_MST_DRIVE)}, {"WIDTH", "COMP", "ATK", "REL", "TILT", "DRIVE"}},
     {"SYS", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
@@ -41,18 +43,18 @@ static const page_t PAGES[] = {
     {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_NONE, ID_NONE, ID_NONE}, {"", "LENGTH", "SOUND", "", "", ""}},
 };
 
-enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_MOD2, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
+enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_MOD2, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_SENDS, PG_FOLLOWER, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
 _Static_assert(PG_TRACK + 1 == NELEM(PAGES), "PG_ names follow PAGES");
 
 /* a page button's first press shows its group's last page; each next press moves through the group */
-typedef struct { uint8_t button, n, page[3]; } page_group_t;
+typedef struct { uint8_t button, n, page[4]; } page_group_t;
 static const page_group_t GROUPS[] = {
     {B_HOME, 1, {PG_HOME}},
     {B_SEL, 2, {PG_E1, PG_E2}},
     {B_EDIT, 1, {PG_STEP}},
     {B_ENV, 3, {PG_AMP, PG_MOD, PG_MOD2}},
-    {B_FX, 2, {PG_FILTER, PG_FX}},
-    {B_LFO, 3, {PG_LFO1, PG_LFO2, PG_SLOTS}},
+    {B_FX, 3, {PG_FILTER, PG_FX, PG_SENDS}},
+    {B_LFO, 4, {PG_LFO1, PG_LFO2, PG_SLOTS, PG_FOLLOWER}},
     {B_GLO, 3, {PG_GLOBAL, PG_MASTER, PG_SYSTEM}},
     {B_ARP, 1, {PG_ARP}},
     {B_SAVE, 1, {PG_SAVE}},
@@ -167,7 +169,7 @@ static int32_t ui_value(uint32_t id)
 /* a selector's names, or 0 for a plain number */
 static const char *const NAMES_SLOT[MOD_SLOTS] = {"1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const NAMES_FILTER[FLT_TYPES] = {"OFF", "LP", "BP", "HP"};
-static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "EN1", "EN2", "LF1", "LF2", "VEL", "RND"};
+static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "EN1", "EN2", "LF1", "LF2", "VEL", "RND", "FOL"};
 static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB", "INDX", "LF1R", "LF2R"};
 static const char *const NAMES_SHAPE[LFO_SHAPES] = {"SINE", "TRI", "SAW", "SQR", "S+H"};
 static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE", "SYNC"};
@@ -1342,20 +1344,29 @@ static void free_master(int32_t comp)
     }
 }
 
-/* sends only the part of each bar that moved */
+/* sends only the part of the bar that moved */
+static void draw_live_bar(uint8_t *drawn, uint32_t x, uint32_t y, uint32_t h, uint32_t bar, uint16_t ink)
+{
+    if (bar > *drawn)
+        lcd_fill(x + *drawn, y, bar - *drawn, h, ink);
+    else if (bar < *drawn)
+        lcd_fill(x + bar, y, *drawn - bar, h, T_BG);
+    *drawn = (uint8_t)bar;
+}
+
 static void draw_master_bars(void)
 {
     const int32_t reduction[MASTER_BARS] = {master.reduction_q16 >> 8, master_limit_reduction_q8(&master)};
     uint32_t i;
-    for (i = 0; i < MASTER_BARS; i++) {
-        uint32_t bar = (uint32_t)clamp(reduction[i], 0, MASTER_BAR_FULL_Q8) * MASTER_BAR_W / MASTER_BAR_FULL_Q8, old = master_bar_drawn[i];
-        if (bar > old)
-            lcd_fill(MASTER_BAR_X + old, MASTER_BAR_ROW_Y(i), bar - old, MASTER_BAR_H, T_ACCENT);
-        else if (bar < old)
-            lcd_fill(MASTER_BAR_X + bar, MASTER_BAR_ROW_Y(i), old - bar, MASTER_BAR_H, T_BG);
-        master_bar_drawn[i] = (uint8_t)bar;
-    }
+    for (i = 0; i < MASTER_BARS; i++)
+        draw_live_bar(&master_bar_drawn[i], MASTER_BAR_X, MASTER_BAR_ROW_Y(i), MASTER_BAR_H, (uint32_t)clamp(reduction[i], 0, MASTER_BAR_FULL_Q8) * MASTER_BAR_W / MASTER_BAR_FULL_Q8, T_ACCENT);
 }
+
+#define FOLLOWER_BAR_X (FREE_X + 30u)
+#define FOLLOWER_BAR_Y (FREE_Y + 28u)
+#define FOLLOWER_BAR_W 154u
+#define FOLLOWER_BAR_H 14u
+static uint8_t follower_bar_drawn;
 
 static uint32_t hash_mix(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 
@@ -1446,6 +1457,10 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             cv_text(4, 24, &AF_S, "NOT BUILT: POWER OFF LOSES ALL", T_ACCENT);
         else if (pg == &PAGES[PG_MASTER])
             free_master(globals[G_MST_COMP]);
+        else if (pg == &PAGES[PG_FOLLOWER]) {
+            cv_text(4, (int32_t)(FOLLOWER_BAR_Y - FREE_Y) - 1, &AF_S, "FOL", T_MID);
+            follower_bar_drawn = 0;
+        }
         else if (pg == &PAGES[PG_ARP])
             cv_text(4, 24, &AF_S, "NOT BUILT", T_MID);
         if (ui.sound_copy == SOUND_COPY_NONE)
@@ -1459,6 +1474,8 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
         draw_meters();
     if (pg == &PAGES[PG_MASTER] && ui.sound_copy == SOUND_COPY_NONE)
         draw_master_bars();
+    if (pg == &PAGES[PG_FOLLOWER] && ui.sound_copy == SOUND_COPY_NONE)
+        draw_live_bar(&follower_bar_drawn, FOLLOWER_BAR_X, FOLLOWER_BAR_Y, FOLLOWER_BAR_H, (uint32_t)follower_level * FOLLOWER_BAR_W / 32768u, T_THEME);
 }
 
 /* inverts in time with the flashing track key */
@@ -1672,6 +1689,8 @@ static void ui_init(void)
     globals[G_MST_ATTACK] = 40;
     globals[G_MST_RELEASE] = 50;
     globals[G_MST_WIDTH] = MASTER_WIDTH_UNITY;
+    globals[G_FOL_ATTACK] = 10;
+    globals[G_FOL_RELEASE] = 50;
     sound_perc(&sounds[0], PERC_SKIN, 36, 82, 0, 0, 0, 10, 50, 0, 127);       /* kick */
     sound_perc(&sounds[1], PERC_SKIN, 50, 70, 0, 64, 70, 20, 15, 70, 127);     /* snare */
     sound_perc(&sounds[2], PERC_METAL, 72, 50, 60, 64, 110, 40, 0, 60, 127);   /* hat */

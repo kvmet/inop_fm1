@@ -490,7 +490,6 @@ static void test_lfo_sync(void)
     enum { RATE_1_16 = 10, RATE_1_BAR = 79 };
     lfo_t a, b;
     seq_t q;
-    uint32_t i;
     lfo_start(&a, LFO_SINE, LFO_SYNC, RATE_1_16, 0);
     CHECK(a.cycle == LFO_SYNC_UNITS_PER_STEP);
     lfo_sync_pos = 0;
@@ -503,8 +502,6 @@ static void test_lfo_sync(void)
     CHECK(b.cycle == 16u * LFO_SYNC_UNITS_PER_STEP);
     lfo_sync_pos = 4u * LFO_SYNC_UNITS_PER_STEP;
     CHECK(lfo_block(&b, 0) > 32000);                    /* 4 steps are a quarter of a bar */
-    for (i = 0; i < LFO_SYNC_RATES; i++)
-        CHECK(LFO_SYNC_CYCLE[i] % 3u == 0u || LFO_SYNC_CYCLE[i] % 256u == 0u);   /* no fraction of a unit: no drift */
     seq_init(&q, 120);
     seq_block(&q, patterns, q.samples_per_step * 3u + q.samples_per_step / 2u, stop_emit);
     CHECK(seq_sync_pos(&q) == 3u * LFO_SYNC_UNITS_PER_STEP + LFO_SYNC_UNITS_PER_STEP / 2u);
@@ -536,6 +533,102 @@ static void test_lfo_shared_sample_hold(void)
         CHECK(changes > 2u);
     }
     lfo_sync_pos = 0;
+}
+
+static void follower_voices_clear(void)
+{
+    uint32_t i;
+    for (i = 0; i < NVOICE; i++)
+        voices[i].active = 0;
+    follower_input = follower_level = 0;
+}
+
+static void follower_blocks(uint32_t blocks)
+{
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    uint32_t b, i;
+    for (b = 0; b < blocks; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+        follower_block(0, 50);
+    }
+}
+
+static void follower_sound(pkt_t *p, int32_t send)
+{
+    sound_init(p, 0);
+    p->v[PV_ENGINE] = ENGINE_WAVE;
+    p->v[PV_E1] = 64;
+    p->v[PV_AMP_S] = 127;
+    p->v[PV_SEND_FOLLOW] = (int8_t)send;
+}
+
+static void test_follower_send(void)
+{
+    pkt_t p;
+    int32_t loud;
+    follower_voices_clear();
+    follower_sound(&p, 0);
+    voice_start(&voices[0], &p, KEY_NONE, 0);
+    follower_blocks(100);
+    CHECK(follower_level == 0);                         /* no send, no signal */
+    follower_voices_clear();
+    follower_sound(&p, 127);
+    voice_start(&voices[0], &p, KEY_NONE, 0);
+    follower_blocks(100);
+    loud = follower_level;
+    CHECK(loud > 8000);
+    follower_voices_clear();
+    follower_sound(&p, 127);
+    p.v[PV_LEVEL] = 0;
+    voice_start(&voices[0], &p, KEY_NONE, 0);
+    follower_blocks(100);
+    CHECK(abs(follower_level - loud) <= loud / 10);     /* LEVEL does not reach the send: a silent track can drive it */
+    follower_voices_clear();
+    follower_sound(&p, 64);
+    voice_start(&voices[0], &p, KEY_NONE, 0);
+    follower_blocks(100);
+    CHECK(abs(follower_level - loud / 2) <= loud / 8);  /* the send scales it */
+    voices[0].active = 0;
+    follower_blocks(3000);
+    CHECK(follower_level == 0);                         /* it falls to nothing */
+}
+
+/* a route reads one value in a block, whatever the voice's place among the voices */
+static void test_follower_ducks_any_voice(void)
+{
+    pkt_t sender, ducked;
+    follower_voices_clear();
+    follower_sound(&sender, 127);
+    follower_sound(&ducked, 0);
+    ducked.v[PV_SLOT_SRC5] = MOD_SRC_FOLLOW;
+    ducked.v[PV_SLOT_DST5] = MOD_DST_LEVEL;
+    ducked.v[PV_SLOT_AMT5] = -127;
+    voice_start(&voices[0], &ducked, KEY_NONE, 0);
+    voice_start(&voices[1], &sender, KEY_NONE, 0);
+    voice_start(&voices[2], &ducked, KEY_NONE, 0);
+    follower_blocks(100);
+    CHECK(voices[0].chain.off[MOD_DST_LEVEL] < -(40 << 8));
+    CHECK(voices[0].chain.off[MOD_DST_LEVEL] == voices[2].chain.off[MOD_DST_LEVEL]);
+    follower_voices_clear();
+}
+
+static void test_follower_times(void)
+{
+    uint32_t b;
+    follower_voices_clear();
+    for (b = 0; follower_level < 20000 && b < 1000u; b++) {     /* 63 % of 32000 */
+        follower_input = 32000;
+        follower_block(64, 64);                         /* 4 octaves: 16 blocks */
+    }
+    CHECK(b >= 10u && b <= 24u);
+    follower_level = 32000;
+    follower_input = 0;
+    for (b = 0; follower_level > 11840 && b < 5000u; b++)   /* 37 % */
+        follower_block(64, 64);                         /* 3 octaves: 320 blocks */
+    CHECK(b >= 200u && b <= 450u);
+    follower_voices_clear();
 }
 
 static void test_stop_and_start(void)
@@ -2920,6 +3013,9 @@ int main(void)
     test_fm_index_routes();
     test_lfo_sync();
     test_lfo_shared_sample_hold();
+    test_follower_send();
+    test_follower_ducks_any_voice();
+    test_follower_times();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

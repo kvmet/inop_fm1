@@ -243,6 +243,14 @@ static uint32_t voice_slowest_block(voice_t *v, const pkt_t *p)
     return worst;
 }
 
+/* runs after the voices, so a voice's route reads the follower one block late, whatever its place among the voices */
+static void follower_block(int32_t attack, int32_t release)
+{
+    int32_t coef = follower_input > follower_level ? attack_coef_q15(attack) : release_coef_q15(release);
+    follower_level += ((follower_input - follower_level) * coef) >> 15;
+    follower_input = 0;
+}
+
 /* the most an engine's own controls can ask, with no effect of the chain on */
 static void voice_bare_packet(pkt_t *p, uint32_t variant)
 {

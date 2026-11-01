@@ -14,9 +14,9 @@
 #define TILT_COEF_Q15 3110       /* a one-pole at 700 Hz, where both shelves meet */
 #define COMP_THRESHOLD_OCTAVES 5 /* full COMP starts 30 dB under the limit */
 #define COMP_KNEE_Q8 128         /* 3 dB each side of the threshold */
-#define COMP_ATTACK_OCT_PER_UNIT 16    /* in 1/256 octaves: 8 octaves over the knob, 1 to 256 blocks: 0.7 to 186 ms */
-#define COMP_RELEASE_OCT_PER_UNIT 12   /* 6 octaves over the knob, 40 to 2500 blocks: 29 ms to 1.8 s */
-#define COMP_RELEASE_MIN_BLOCKS 40
+#define ATTACK_OCT_PER_UNIT 16   /* in 1/256 octaves: 8 octaves over the knob, 1 to 256 blocks: 0.7 to 186 ms */
+#define RELEASE_OCT_PER_UNIT 12  /* 6 octaves over the knob, 40 to 2500 blocks: 29 ms to 1.8 s */
+#define RELEASE_MIN_BLOCKS 40
 
 typedef struct {
     int32_t env;                 /* the limiter's */
@@ -69,8 +69,9 @@ static AUDIO_INLINE int32_t comp_reduction_q8(int32_t level_q8, int32_t comp)
     return (over * comp_slope_q8(comp)) >> 8;
 }
 
-/* blocks to 63 % of a change as Q15 of the distance a block moves */
-static AUDIO_INLINE int32_t comp_coef_q15(int32_t blocks_q12) { return (int32_t)((32767u << 12) / (uint32_t)blocks_q12); }
+/* Q15 of the distance a block moves, so that a change is 63 % done after the knob's time */
+static AUDIO_INLINE int32_t attack_coef_q15(int32_t knob) { return (int32_t)((32767u << 12) / (uint32_t)exp2_q12(clamp(knob, 0, 127) * ATTACK_OCT_PER_UNIT)); }
+static AUDIO_INLINE int32_t release_coef_q15(int32_t knob) { return (int32_t)((32767u << 12) / (uint32_t)(exp2_q12(clamp(knob, 0, 127) * RELEASE_OCT_PER_UNIT) * RELEASE_MIN_BLOCKS)); }
 
 static AUDIO_INLINE void master_tilt(master_t *m, int32_t *l, int32_t *r, int32_t tilt)
 {
@@ -101,8 +102,7 @@ static AUDIO_INLINE void master_compress(master_t *m, int32_t *l, int32_t *r, co
         peak = r[i] > peak ? r[i] : -r[i] > peak ? -r[i] : peak;
     }
     target = p->comp ? comp_reduction_q8(log2_q8((uint32_t)peak), p->comp) << 8 : 0;
-    coef = target > m->reduction_q16 ? comp_coef_q15(exp2_q12(clamp(p->attack, 0, 127) * COMP_ATTACK_OCT_PER_UNIT))
-                                     : comp_coef_q15(exp2_q12(clamp(p->release, 0, 127) * COMP_RELEASE_OCT_PER_UNIT) * COMP_RELEASE_MIN_BLOCKS);
+    coef = target > m->reduction_q16 ? attack_coef_q15(p->attack) : release_coef_q15(p->release);
     m->reduction_q16 += ((target - m->reduction_q16) >> 8) * coef >> 7;
     if (!p->comp && m->reduction_q16 < 256)
         m->reduction_q16 = 0;
