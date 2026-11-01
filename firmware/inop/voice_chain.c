@@ -364,6 +364,44 @@ static AUDIO_INLINE int32_t chain_fm_index_q15(const chain_t *c)
     return c->index_routed ? clamp((c->off[MOD_DST_INDEX] * 129) >> 7, 0, 32768) : 32768;
 }
 
+/* the destination that feeds a knob's value, or MOD_DST_OFF. Each engine's TIMBRE offset moves one of its knobs */
+static uint32_t mod_dst_of_value(uint32_t id, int32_t engine)
+{
+    switch (id) {
+    case PV_NOTE: return MOD_DST_PITCH;
+    case PV_FLT_CUT: return MOD_DST_CUT;
+    case PV_FLT_RES: return MOD_DST_RES;
+    case PV_LEVEL: return MOD_DST_LEVEL;
+    case PV_PAN: return MOD_DST_PAN;
+    case PV_DRIVE: return MOD_DST_DRIVE;
+    case PV_SHAPER: return MOD_DST_SHAPER;
+    case PV_CRUSH: return MOD_DST_CRUSH;
+    case PV_RATE: return MOD_DST_RATE;
+    case PV_LFO1_RATE: return MOD_DST_LFO1_RATE;
+    case PV_LFO2_RATE: return MOD_DST_LFO2_RATE;
+    case PV_E1: return engine == ENGINE_PERC || engine == ENGINE_WAVE ? MOD_DST_TIMBRE : MOD_DST_OFF;
+    case PV_E2: return engine == ENGINE_SWARM ? MOD_DST_TIMBRE : MOD_DST_OFF;
+    case PV_E4:
+    case PV_E5: return engine == ENGINE_FM ? MOD_DST_INDEX : MOD_DST_OFF;
+    default: return MOD_DST_OFF;
+    }
+}
+
+/* the slot that holds this route, or else the first that does nothing, or -1. A route to the index at amount 0 still closes the index */
+static int32_t mod_route_slot(const pkt_t *p, int32_t src, int32_t dst)
+{
+    uint32_t i;
+    for (i = 0; i < MOD_SLOTS; i++)
+        if (p->v[PV_SLOT_SRC0 + i] == src && p->v[PV_SLOT_DST0 + i] == dst)
+            return (int32_t)i;
+    for (i = 0; i < MOD_SLOTS; i++) {
+        int32_t from = p->v[PV_SLOT_SRC0 + i], to = p->v[PV_SLOT_DST0 + i];
+        if (from == MOD_SRC_OFF || to == MOD_DST_OFF || (p->v[PV_SLOT_AMT0 + i] == 0 && to != MOD_DST_INDEX))
+            return (int32_t)i;
+    }
+    return -1;
+}
+
 static AUDIO_INLINE int32_t softclip(int32_t x)
 {
     int32_t a = x < 0 ? -x : x, i = a >> 8, y;

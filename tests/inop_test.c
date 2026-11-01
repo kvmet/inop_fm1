@@ -390,6 +390,30 @@ static void test_mod_random_source(void)
     CHECK(a.off[MOD_DST_PAN] == first);                 /* and it holds for the whole note */
 }
 
+static void test_mod_each_lfo_is_its_own_source(void)
+{
+    pkt_t p;
+    chain_t c, copy;
+    int32_t lfo1, lfo2;
+    sound_init(&p, 0);
+    p.v[PV_LFO1_SHAPE] = LFO_SINE;
+    p.v[PV_LFO2_SHAPE] = LFO_SQUARE;
+    p.v[PV_SLOT_SRC5] = MOD_SRC_LFO1;
+    p.v[PV_SLOT_DST5] = MOD_DST_PAN;
+    p.v[PV_SLOT_AMT5] = 127;
+    p.v[PV_SLOT_SRC6] = MOD_SRC_LFO2;
+    p.v[PV_SLOT_DST6] = MOD_DST_CUT;
+    p.v[PV_SLOT_AMT6] = 127;
+    chain_start(&c, &p);
+    copy = c;
+    lfo1 = lfo_block(&copy.lfo[0], 0);
+    lfo2 = lfo_block(&copy.lfo[1], 0);
+    CHECK(abs(lfo1 - lfo2) > 8000);
+    chain_mod(&c, &p, 0);
+    CHECK(c.off[MOD_DST_PAN] == (lfo1 * 127) >> 7);
+    CHECK(c.off[MOD_DST_CUT] == (lfo2 * 127) >> 7);
+}
+
 static void test_mod_lfo_rate_route(void)
 {
     pkt_t p;
@@ -629,6 +653,48 @@ static void test_follower_times(void)
         follower_block(64, 64);                         /* 3 octaves: 320 blocks */
     CHECK(b >= 200u && b <= 450u);
     follower_voices_clear();
+}
+
+static void test_mod_route_slot(void)
+{
+    pkt_t p;
+    uint32_t i;
+    sound_init(&p, 0);
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PITCH) == 1);   /* the route that exists, at amount 0 */
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PAN) == 0);     /* a new route: the first slot doing nothing */
+    p.v[PV_SLOT_AMT0] = 10;
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PAN) == 1);     /* a slot in use stays */
+    CHECK(mod_route_slot(&p, MOD_SRC_ENV, MOD_DST_INDEX) == 4);
+    p.v[PV_SLOT_AMT4] = 0;
+    for (i = 0; i < 4u; i++)
+        p.v[PV_SLOT_AMT0 + i] = 10;
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PAN) == 5);     /* a route to the index at 0 is in use: it closes the index */
+    for (i = 0; i < MOD_SLOTS; i++) {
+        p.v[PV_SLOT_SRC0 + i] = MOD_SRC_VEL;
+        p.v[PV_SLOT_DST0 + i] = MOD_DST_CUT;
+        p.v[PV_SLOT_AMT0 + i] = 10;
+    }
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PAN) == -1);    /* all in use */
+    p.v[PV_SLOT_DST3] = MOD_DST_OFF;
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PAN) == 3);     /* no destination: does nothing at any amount */
+    p.v[PV_SLOT_DST3] = MOD_DST_CUT;
+    p.v[PV_SLOT_SRC2] = MOD_SRC_OFF;
+    CHECK(mod_route_slot(&p, MOD_SRC_LFO1, MOD_DST_PAN) == 2);     /* no source: the same */
+}
+
+/* every destination has a knob that leads to it */
+static void test_mod_dst_of_value(void)
+{
+    uint32_t seen = 1u << MOD_DST_OFF, id;
+    int32_t engine;
+    for (engine = 0; engine < ENGINES; engine++)
+        for (id = 0; id < PV_COUNT; id++)
+            seen |= 1u << mod_dst_of_value(id, engine);
+    CHECK(seen == (1u << MOD_DSTS) - 1u);
+    CHECK(mod_dst_of_value(PV_E4, ENGINE_FM) == MOD_DST_INDEX && mod_dst_of_value(PV_E4, ENGINE_WAVE) == MOD_DST_OFF);
+    CHECK(mod_dst_of_value(PV_E1, ENGINE_WAVE) == MOD_DST_TIMBRE && mod_dst_of_value(PV_E2, ENGINE_SWARM) == MOD_DST_TIMBRE);
+    CHECK(mod_dst_of_value(PV_E1, ENGINE_FM) == MOD_DST_OFF);
+    CHECK(mod_dst_of_value(PV_AMP_D, ENGINE_FM) == MOD_DST_OFF);
 }
 
 static void test_stop_and_start(void)
@@ -3016,6 +3082,9 @@ int main(void)
     test_follower_send();
     test_follower_ducks_any_voice();
     test_follower_times();
+    test_mod_each_lfo_is_its_own_source();
+    test_mod_route_slot();
+    test_mod_dst_of_value();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

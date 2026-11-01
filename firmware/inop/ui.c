@@ -11,7 +11,7 @@ enum { E_SELECT = 0, E_ALGO = 1, E_PRESETS = 6, E_K1 = 2 };
 
 #define OCTAVE_MAX 3
 #define NKNOB 6u
-#define LOCKS_FULL_MS 1500u      /* how long the status line reports a lock that did not fit */
+#define NOTICE_MS 1500u
 #define DUB_STILL_MS 150u        /* with one step, the longest a knob can rest and keep writing */
 /* a page's values in screen order: row 1 is SEL and knobs 1 to 4, row 2 is ALGO */
 static const uint8_t KNOB_ENC[NKNOB] = {E_SELECT, E_K1, E_K1 + 1, E_K1 + 2, E_K1 + 3, E_ALGO};
@@ -91,7 +91,9 @@ static struct {
     uint8_t play_used;           /* this PLAY press already acted: its release must not toggle the keys */
     uint8_t rec_used;            /* this REC press already acted: its release is not a tap */
     uint32_t bpm, rec_t0, held_keys, track_t0;
-    uint32_t drop_seen, drop_t0, locks_full_t0;
+    uint32_t drop_seen, drop_t0, notice_t0;
+    uint8_t route_used;          /* this press of LFO or ENV made a route: its release must not change the page */
+    char notice[24];             /* the status line shows this for NOTICE_MS */
 } ui;
 enum { SOUND_COPY_NONE, SOUND_COPY_CHOOSE, SOUND_COPY_CONFIRM };
 
@@ -99,6 +101,15 @@ enum { SOUND_COPY_NONE, SOUND_COPY_CHOOSE, SOUND_COPY_CONFIRM };
 typedef struct { track_pat_t *t; uint32_t t0; uint8_t step, used; } held_t;
 static held_t held[16];
 static held_t *held_first;       /* the oldest held step: the screen shows its values */
+
+static void ui_notice(const char *text)
+{
+    uint32_t i;
+    for (i = 0; text[i] && i + 1u < sizeof ui.notice; i++)
+        ui.notice[i] = text[i];
+    ui.notice[i] = 0;
+    ui.notice_t0 = fm1_ms;
+}
 
 static track_pat_t *ui_track(void) { return &patterns[ui.edit_pat].track[ui.track]; }
 static const page_t *ui_page(void)
@@ -264,7 +275,7 @@ static void held_knob(held_t *h, uint32_t id, int32_t delta)
     irq = irq_save();
     h->t->steps[h->step].on = 1;
     if (step_write(h->t, h->step, id, v))
-        ui.locks_full_t0 = fm1_ms;
+        ui_notice("LOCKS FULL");
     irq_restore(irq);
     h->used = 1;
 }
@@ -395,7 +406,7 @@ static void copy_step(track_pat_t *t, uint32_t from, uint32_t to)
 {
     uint32_t irq = irq_save();
     if (step_copy(t, from, to))
-        ui.locks_full_t0 = fm1_ms;
+        ui_notice("LOCKS FULL");
     irq_restore(irq);
 }
 
@@ -583,6 +594,136 @@ static void transport_toggle(void)
     irq_restore(irq);
 }
 
+static char *put_text(char *s, const char *t)
+{
+    while (*t)
+        *s++ = *t++;
+    *s = 0;
+    return s;
+}
+static char *put_int(char *s, int32_t v)
+{
+    uint32_t u = v < 0 ? (uint32_t)-v : (uint32_t)v;
+    char tmp[12];
+    uint32_t n = 0;
+    if (v < 0)
+        *s++ = '-';
+    do
+        tmp[n++] = (char)('0' + u % 10u);
+    while (u /= 10u);
+    while (n)
+        *s++ = tmp[--n];
+    *s = 0;
+    return s;
+}
+
+/* LFO or ENV held: the source is the page last shown under that button */
+static int32_t route_source_held(void)
+{
+    uint32_t k;
+    for (k = 0; k < NGROUPS; k++) {
+        if (!(fm1_in.buttons >> GROUPS[k].button & 1u))
+            continue;
+        if (GROUPS[k].button == B_LFO)
+            return GROUPS[k].page[ui.group_page[k]] == PG_LFO2 ? MOD_SRC_LFO2 : MOD_SRC_LFO1;
+        if (GROUPS[k].button == B_ENV)
+            return GROUPS[k].page[ui.group_page[k]] == PG_MOD2 ? MOD_SRC_ENV2 : MOD_SRC_ENV;
+    }
+    return MOD_SRC_OFF;
+}
+
+/* each held step finds its own slot: the steps can hold different routes. 0, or -1 with a notice.
+ * A new route's three locks go in together: a part of one would connect the slot's old source or destination */
+static int route_held(held_t *h, int32_t source, int32_t dst, int32_t delta)
+{
+    pkt_t p;
+    track_pat_t *t = h->t;
+    int32_t slot, amount, full;
+    uint32_t irq;
+    packet_resolve(&p, sounds, t, h->step);
+    slot = mod_route_slot(&p, source, dst);
+    if (slot < 0) {
+        ui_notice("SLOTS FULL");
+        return -1;
+    }
+    amount = p.v[PV_SLOT_AMT0 + slot];
+    irq = irq_save();
+    if (p.v[PV_SLOT_SRC0 + slot] == source && p.v[PV_SLOT_DST0 + slot] == dst) {
+        full = 0;
+    } else {
+        amount = 0;
+        full = t->nlock + 3u > TRACK_LOCKS;
+        if (!full) {
+            step_write(t, h->step, PV_SLOT_SRC0 + (uint32_t)slot, source);
+            step_write(t, h->step, PV_SLOT_DST0 + (uint32_t)slot, dst);
+        }
+    }
+    full = full || step_write(t, h->step, PV_SLOT_AMT0 + (uint32_t)slot, value_clamp(PV_SLOT_AMT0, amount + delta));
+    t->steps[h->step].on = 1;
+    irq_restore(irq);
+    h->used = 1;
+    if (full)
+        ui_notice("LOCKS FULL");
+    return full ? -1 : 0;
+}
+
+/* the base sound, or overdub's moving values */
+static int32_t route_panel(int32_t source, int32_t dst, int32_t delta)
+{
+    pkt_t p;
+    uint32_t i;
+    int32_t slot;
+    ui_packet(&p);
+    for (i = PV_SLOT_SRC0; i <= PV_SLOT_AMT7; i++)
+        p.v[i] = (int8_t)ui_value(i);
+    slot = mod_route_slot(&p, source, dst);
+    if (slot < 0)
+        return slot;
+    if (p.v[PV_SLOT_SRC0 + slot] != source || p.v[PV_SLOT_DST0 + slot] != dst) {
+        ui_knob(PV_SLOT_SRC0 + (uint32_t)slot, source - p.v[PV_SLOT_SRC0 + slot]);
+        ui_knob(PV_SLOT_DST0 + (uint32_t)slot, dst - p.v[PV_SLOT_DST0 + slot]);
+        ui_knob(PV_SLOT_AMT0 + (uint32_t)slot, -p.v[PV_SLOT_AMT0 + slot]);
+    }
+    ui_knob(PV_SLOT_AMT0 + (uint32_t)slot, delta);
+    return slot;
+}
+
+static void route_knob(int32_t source, uint32_t id, int32_t delta)
+{
+    char b[24], *s;
+    pkt_t p;
+    uint32_t i;
+    int32_t slot, dst = (int32_t)mod_dst_of_value(id, ui_engine());
+    ui.route_used = 1;
+    if (dst == MOD_DST_OFF) {
+        ui_notice("NO ROUTE");
+        return;
+    }
+    if (held_first) {
+        int failed = 0;
+        for (i = 0; i < NELEM(held); i++)
+            if (held[i].t)
+                failed |= route_held(&held[i], source, dst, delta);
+        if (failed)
+            return;
+        ui_packet(&p);
+        slot = mod_route_slot(&p, source, dst);
+    } else {
+        slot = route_panel(source, dst, delta);
+    }
+    if (slot < 0) {
+        ui_notice("SLOTS FULL");
+        return;
+    }
+    ui.slot = (uint8_t)slot;
+    s = put_text(b, NAMES_SRC[source]);
+    s = put_text(s, ">");
+    s = put_text(s, NAMES_DST[dst]);
+    s = put_text(s, ui_value(PV_SLOT_AMT0 + (uint32_t)slot) < 0 ? " " : " +");
+    put_int(s, ui_value(PV_SLOT_AMT0 + (uint32_t)slot));
+    ui_notice(b);
+}
+
 static void ui_input(void)
 {
     uint32_t released, edges = fm1_input_edges(&released), now = fm1_in.notes, changed = now ^ ui.held_keys, k;
@@ -633,9 +774,13 @@ static void ui_input(void)
         keys_mask = dub_keys_mask(rec);
     if (edges >> B_SEQ & 1u && !ui.dub)
         ui.pattern_mode = !ui.pattern_mode;
-    for (k = 0; k < NGROUPS; k++)
-        if (edges >> GROUPS[k].button & 1u)
+    if (edges >> B_LFO & 1u || edges >> B_ENV & 1u)
+        ui.route_used = 0;
+    for (k = 0; k < NGROUPS; k++) {
+        uint32_t button = GROUPS[k].button, routes = button == B_LFO || button == B_ENV;
+        if (routes ? released >> button & 1u && !ui.route_used : edges >> button & 1u)
             page_button(k);
+    }
     if (edges >> B_OCTUP & 1u)
         oct_button(1);
     if (edges >> B_OCTDN & 1u)
@@ -651,7 +796,11 @@ static void ui_input(void)
         if (d && ui_label(pg, k)[0]) {
             int32_t count;
             uint32_t id = page_id(pg, k);
-            ui_knob(id, value_names(id, &count) ? d : d * shift);   /* a selector's short list would jump to its end */
+            int32_t source = route_source_held();
+            if (source != MOD_SRC_OFF)
+                route_knob(source, id, d * shift);
+            else
+                ui_knob(id, value_names(id, &count) ? d : d * shift);   /* a selector's short list would jump to its end */
             ui.rec_used |= (uint8_t)rec;
         }
     }
@@ -698,30 +847,7 @@ static void ui_leds(void)
     fm1_led_key(B_SEQ, ui.pattern_mode);
     fm1_led_key(B_REC, ui.sound_copy == SOUND_COPY_CONFIRM ? (int)blink : ui.dub || ((fm1_in.buttons >> B_REC) & 1));
     for (i = 0; i < NGROUPS; i++)
-        fm1_led_key(GROUPS[i].button, !ui.pattern_mode && i == ui.group);
-}
-
-static char *put_text(char *s, const char *t)
-{
-    while (*t)
-        *s++ = *t++;
-    *s = 0;
-    return s;
-}
-static char *put_int(char *s, int32_t v)
-{
-    uint32_t u = v < 0 ? (uint32_t)-v : (uint32_t)v;
-    char tmp[12];
-    uint32_t n = 0;
-    if (v < 0)
-        *s++ = '-';
-    do
-        tmp[n++] = (char)('0' + u % 10u);
-    while (u /= 10u);
-    while (n)
-        *s++ = tmp[--n];
-    *s = 0;
-    return s;
+        fm1_led_key(GROUPS[i].button, (!ui.pattern_mode && i == ui.group) || ((GROUPS[i].button == B_LFO || GROUPS[i].button == B_ENV) && fm1_in.buttons >> GROUPS[i].button & 1u));
 }
 
 static char *put_two_digits(char *s, uint32_t v)
@@ -1531,8 +1657,8 @@ static void draw_status(void)
 {
     char b[48], *s;
     uint32_t k, others = 0;
-    uint32_t locks_full = (ui.dub && dub.full) || (ui.locks_full_t0 && fm1_ms - ui.locks_full_t0 < LOCKS_FULL_MS);
-    if (!locks_full && !held_first) {
+    uint32_t notice = ui.notice_t0 && fm1_ms - ui.notice_t0 < NOTICE_MS, locks_full = ui.dub && dub.full;
+    if (!notice && !locks_full && !held_first) {
         s = put_two_digits(put_text(b, "CPU "), audio_cpu_q8 * 100u / 256u);
         put_two_digits(put_text(s, " V "), voices_active());
         ui_text(LINE_STATUS, STATUS_X, BOTTOM_Y, SCREEN_EDGE - DROP_W - STATUS_X, &AF_S, b, T_MID, ALIGN_RIGHT);
@@ -1540,7 +1666,9 @@ static void draw_status(void)
         return;
     }
     line_drawn[LINE_DROP].text[0] = 0;
-    if (locks_full) {
+    if (notice) {
+        put_text(b, ui.notice);
+    } else if (locks_full) {
         put_text(b, "LOCKS FULL");
     } else {
         const step_t *st = &held_first->t->steps[held_first->step];

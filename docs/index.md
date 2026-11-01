@@ -65,6 +65,16 @@ Shared effects and the master have a fixed CPU cost, which is reserved before vo
 - A new sound starts with mod envelope 1 to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to cutoff, all at amount 0, and mod envelope 1 to FM index at 127. Each slot can be changed.
 - **FM index:** routes to it scale the index, so the index knobs set the most it can reach, and an envelope at 127 reaches that at its peak. With no route, the index stays at its knobs. A route with amount 0 closes it. To have no route, set its source to off.
 
+### Hold to route
+
+Hold LFO or ENV and turn a knob on any page. That knob's value does not change. The turn sets the amount of a route from that source to that value, and the bottom row shows it, such as `LF1>CUT +12`. If the route exists, the turn moves its amount. If not, it takes the first slot with no source, no destination or amount 0, starting at amount 0.
+
+- **Source:** the page last shown under the button. LFO gives LFO 2 if that page was last, else LFO 1. ENV gives mod envelope 2 if that page was last, else mod envelope 1.
+- **Knobs with a route:** note, cutoff, resonance, level, pan, drive, shaper, bit crush, rate reduce, each LFO's rate, FM's index knobs, and the engine knob that timbre moves: Perc FM, SWARM SHAPE and WAVE WAVE. Others show `NO ROUTE`.
+- **Held steps and overdub:** with a step held, the route is a lock on that step. In overdub, the turn records the route as locks on the steps it passes.
+- **No free slot:** the bottom row shows `SLOTS FULL`.
+- **Page change:** LFO and ENV change the page on release, and not after a route.
+
 ## Follower
 
 The follower turns audio into a modulation source, such as a kick that ducks the pads.
@@ -309,7 +319,6 @@ The amp envelope means the same as on every other engine:
 - One level of undo, with clear and randomize.
 - Perform layer on ARP: density, chance offset, mutate and fill as offsets that do not change the pattern. PIT fill, GLO reset, MONO mutate.
 - MIDI clock.
-- Mod slot shortcut: hold LFO and turn a knob.
 - Per-step parameter lane and range select.
 - Clear and randomize during overdub, including a way to unset locks and free their memory.
 - Chord modes.
