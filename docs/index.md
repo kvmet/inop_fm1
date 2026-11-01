@@ -58,8 +58,9 @@ Shared effects and the master have a fixed CPU cost, which is reserved before vo
 ## Modulation
 
 - Each packet has free modulation slots. A slot holds a source, a destination and an amount.
-- The sources are the mod envelope, LFO 1, LFO 2 and velocity. The envelope follower is added later.
-- The destinations are pitch, cutoff, resonance, level, pan, drive, shaper, bit crush and rate reduce. An amount of 127 and a full source move a value by 127; pitch moves 16 semitones.
+- A packet has 8 slots. Routes to one destination add up.
+- The sources are the mod envelope, LFO 1, LFO 2, velocity and random. Random draws one value per trigger and holds it for the note, from -1 to 1 of full scale.
+- The destinations are pitch, cutoff, resonance, level, pan, drive, shaper, bit crush, rate reduce, timbre and the rate of each LFO. A rate route works in retrigger mode only: a free LFO keeps its rate. An amount of 127 and a full source move a value by 127; pitch moves 16 semitones.
 - A new sound starts with mod envelope to cutoff, LFO 1 to pitch, LFO 2 to cutoff and velocity to cutoff, all at amount 0. Each slot can be changed.
 
 ## Packet
@@ -78,7 +79,7 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 | Engine 1 | engine | E1 | E2 | E3 | E4 | patch or model |
 | Engine 2 | | E5 | E6 | E7 | | |
 
-The engine sets what the 8 engine values mean. The mod slots page lists all 4 routes. The distortion and follower sends have no knob until they do something.
+The engine sets what the 8 engine values mean. The mod slots page lists all 8 routes. The distortion and follower sends have no knob until they do something.
 
 Delay and reverb settings are project values and are not in the packet. The Global page shows them and the tempo.
 
@@ -171,7 +172,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | Amp envelope, Mod envelope | The envelope's shape, with a fixed width for the sustain. The curve is the envelope code's own output. One pixel is 0.73 ms until the curve fills the width, and then the curve scales to fit. |
 | Filter | The response on the CUT knob's scale, with a peak that follows RES. A sketch at 12 dB an octave, not a measurement. Key tracking does not show. |
 | LFO 1, LFO 2 | One second of the waveform at its start phase, so a faster rate shows more cycles, up to one cycle per 7 px. |
-| Mod slots | All 4 routes. |
+| Mod slots | All 8 routes in 2 columns. The selected slot is brighter. |
 | Engine 1, Engine 2 | FM: the algorithm, with carriers solid and modulators outlined. Each box names the ratio knob that sets it: C, A or B. Feedback is marked on B2. To its right, one cycle from the engine at full index. Perc: each partial as a bar, at its frequency and starting level. SWARM and WAVE: the wave. |
 | Step | `HOLD A STEP` until a step is held. |
 | System | Cost in us of one block: each engine alone and shared, each effect, delay, reverb and master, and the budget. Then late buffers, stolen voices and drops. |

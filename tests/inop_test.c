@@ -369,6 +369,53 @@ static void test_master_volume_last(void)
     CHECK(abs(quiet - full / 4) <= 1);
 }
 
+static void test_mod_random_source(void)
+{
+    pkt_t p;
+    chain_t a, b;
+    int32_t first;
+    uint32_t i;
+    sound_init(&p, 0);
+    p.v[PV_SLOT_SRC5] = MOD_SRC_RANDOM;
+    p.v[PV_SLOT_DST5] = MOD_DST_PAN;
+    p.v[PV_SLOT_AMT5] = 127;
+    chain_start(&a, &p);
+    chain_start(&b, &p);
+    CHECK(a.random != b.random);                        /* each trigger draws its own */
+    chain_mod(&a, &p, 0);
+    first = a.off[MOD_DST_PAN];
+    CHECK(first == (a.random * 127) >> 7);              /* the slots past the fourth run */
+    for (i = 0; i < 100u; i++)
+        chain_mod(&a, &p, i);
+    CHECK(a.off[MOD_DST_PAN] == first);                 /* and it holds for the whole note */
+}
+
+static void test_mod_lfo_rate_route(void)
+{
+    pkt_t p;
+    chain_t c;
+    sound_init(&p, 0);
+    p.v[PV_VEL] = 127;
+    p.v[PV_LFO1_RATE] = 40;
+    p.v[PV_SLOT_SRC4] = MOD_SRC_VEL;
+    p.v[PV_SLOT_DST4] = MOD_DST_LFO1_RATE;
+    p.v[PV_SLOT_AMT4] = 24;
+    chain_start(&c, &p);
+    chain_mod(&c, &p, 0);
+    CHECK(abs((c.off[MOD_DST_LFO1_RATE] >> 8) - 24) <= 1);
+    CHECK(c.lfo[0].inc == lfo_inc(40 + (c.off[MOD_DST_LFO1_RATE] >> 8)));
+    CHECK(c.lfo[0].inc > lfo_inc(40) * 3u);             /* 24 values are 2 octaves */
+    CHECK(c.lfo[1].inc == lfo_inc(p.v[PV_LFO2_RATE]));  /* the other LFO stays */
+    p.v[PV_SLOT_AMT4] = 0;
+    chain_mod(&c, &p, 1);
+    CHECK(c.lfo[0].inc == lfo_inc(40));                 /* the rate returns when the route ends */
+    p.v[PV_LFO1_PHASE] = LFO_FREE;
+    p.v[PV_SLOT_AMT4] = 24;
+    chain_start(&c, &p);
+    chain_mod(&c, &p, 0);
+    CHECK(c.lfo[0].inc == lfo_inc(40));                 /* a free LFO's rate does not move */
+}
+
 static void test_stop_and_start(void)
 {
     seq_t q;
@@ -2745,6 +2792,8 @@ int main(void)
     test_master_drive();
     test_master_extremes_bound();
     test_master_volume_last();
+    test_mod_random_source();
+    test_mod_lfo_rate_route();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

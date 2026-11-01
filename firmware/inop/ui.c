@@ -10,7 +10,6 @@ enum { E_SELECT = 0, E_ALGO = 1, E_PRESETS = 6, E_K1 = 2 };
 #define SHIFT_STEP 10
 
 #define OCTAVE_MAX 3
-#define SLOTS 4u
 #define NKNOB 6u
 #define LOCKS_FULL_MS 1500u      /* how long the status line reports a lock that did not fit */
 #define DUB_STILL_MS 150u        /* with one step, the longest a knob can rest and keep writing */
@@ -110,7 +109,7 @@ static const page_t *ui_page(void)
 static uint32_t page_id(const page_t *pg, uint32_t k)
 {
     uint32_t id = pg->id[k];
-    return id >= PV_SLOT_SRC0 && id <= PV_SLOT_AMT3 ? id + ui.slot : id;
+    return id >= PV_SLOT_SRC0 && id <= PV_SLOT_AMT7 ? id + ui.slot : id;
 }
 
 static int ui_shift(void) { return !ui.pattern_mode && ((fm1_in.notes >> black_key[SHIFT_BLACK]) & 1u); }
@@ -165,10 +164,10 @@ static int32_t ui_value(uint32_t id)
 }
 
 /* a selector's names, or 0 for a plain number */
-static const char *const NAMES_SLOT[SLOTS] = {"1", "2", "3", "4"};
+static const char *const NAMES_SLOT[MOD_SLOTS] = {"1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const NAMES_FILTER[FLT_TYPES] = {"OFF", "LP", "BP", "HP"};
-static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "ENV", "LF1", "LF2", "VEL"};
-static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB"};
+static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "ENV", "LF1", "LF2", "VEL", "RND"};
+static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB", "LF1R", "LF2R"};
 static const char *const NAMES_SHAPE[LFO_SHAPES] = {"SINE", "TRI", "SAW", "SQR", "S+H"};
 static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE"};
 static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PERC", "SWARM", "WAVE"};
@@ -199,7 +198,7 @@ static const char *ui_label(const page_t *pg, uint32_t k)
 
 static const char *const *value_names(uint32_t id, int32_t *count)
 {
-    if (id == ID_SLOT) { *count = SLOTS; return NAMES_SLOT; }
+    if (id == ID_SLOT) { *count = MOD_SLOTS; return NAMES_SLOT; }
     if (id == PV_FLT_TYPE) { *count = FLT_TYPES; return NAMES_FILTER; }
     if (id == PV_ENGINE) { *count = ENGINES; return NAMES_ENGINE; }
     if (id == PV_PRIO) { *count = PRIOS; return NAMES_PRIO; }
@@ -208,8 +207,8 @@ static const char *const *value_names(uint32_t id, int32_t *count)
     if (id == PV_E0 && ui_engine() == ENGINE_SWARM) { *count = SWARM_MODES; return NAMES_SWARM; }
     if (id == PV_E0 && ui_engine() == ENGINE_FM) { *count = FM_ALGS; return NAMES_ALG; }
     if (id >= PV_E1 && id <= PV_E3 && ui_engine() == ENGINE_FM) { *count = FM_RATIOS; return NAMES_RATIO; }
-    if (id >= PV_SLOT_SRC0 && id <= PV_SLOT_SRC3) { *count = MOD_SRCS; return NAMES_SRC; }
-    if (id >= PV_SLOT_DST0 && id <= PV_SLOT_DST3) { *count = MOD_DSTS; return NAMES_DST; }
+    if (id >= PV_SLOT_SRC0 && id <= PV_SLOT_SRC7) { *count = MOD_SRCS; return NAMES_SRC; }
+    if (id >= PV_SLOT_DST0 && id <= PV_SLOT_DST7) { *count = MOD_DSTS; return NAMES_DST; }
     if (id == PV_LFO1_SHAPE || id == PV_LFO2_SHAPE) { *count = LFO_SHAPES; return NAMES_SHAPE; }
     if (id == PV_LFO1_PHASE || id == PV_LFO2_PHASE) { *count = LFO_MODES; return NAMES_MODE; }
     return 0;
@@ -245,7 +244,7 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, -WAVE_PITCH2_MAX, WAVE_PITCH2_MAX);
     if (id == PV_E4 && ui_engine() == ENGINE_WAVE)
         return clamp(v, -WAVE_CROSS_MAX, WAVE_CROSS_MAX);
-    if (id >= PV_SLOT_AMT0 && id <= PV_SLOT_AMT3)
+    if (id >= PV_SLOT_AMT0 && id <= PV_SLOT_AMT7)
         return clamp(v, -127, 127);
     return clamp(v, 0, 127);
 }
@@ -1028,7 +1027,7 @@ static void free_routes(const pkt_t *p)
 {
     char b[48], *s;
     uint32_t i;
-    for (i = 0; i < SLOTS; i++) {
+    for (i = 0; i < MOD_SLOTS; i++) {
         int32_t src = clamp(p->v[PV_SLOT_SRC0 + i], 0, MOD_SRCS - 1), dst = clamp(p->v[PV_SLOT_DST0 + i], 0, MOD_DSTS - 1);
         int32_t amt = p->v[PV_SLOT_AMT0 + i];
         s = put_int(b, (int32_t)i + 1);
@@ -1038,7 +1037,7 @@ static void free_routes(const pkt_t *p)
         s = put_text(s, NAMES_DST[dst]);
         s = put_text(s, amt < 0 ? " " : " +");
         put_int(s, amt);
-        cv_text(4, 1 + (int32_t)i * 16, &AF_S, b, i == ui.slot ? T_TEXT : T_MID);
+        cv_text(4 + (int32_t)(i >> 2) * 94, 1 + (int32_t)(i & 3u) * 16, &AF_S, b, i == ui.slot ? T_TEXT : T_MID);
     }
 }
 

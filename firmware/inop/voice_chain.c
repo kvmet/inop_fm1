@@ -9,11 +9,12 @@ _Static_assert((1 << CTL_BITS) == CTL, "the amp ramp divides by a shift");
 
 enum { FLT_OFF, FLT_LP, FLT_BP, FLT_HP, FLT_TYPES };
 enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
-enum { MOD_SRC_OFF, MOD_SRC_ENV, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_VEL, MOD_SRCS };
-enum { MOD_DST_OFF, MOD_DST_PITCH, MOD_DST_CUT, MOD_DST_RES, MOD_DST_LEVEL, MOD_DST_PAN, MOD_DST_DRIVE, MOD_DST_SHAPER, MOD_DST_CRUSH, MOD_DST_RATE, MOD_DST_TIMBRE, MOD_DSTS };
+enum { MOD_SRC_OFF, MOD_SRC_ENV, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_VEL, MOD_SRC_RANDOM, MOD_SRCS };
+enum { MOD_DST_OFF, MOD_DST_PITCH, MOD_DST_CUT, MOD_DST_RES, MOD_DST_LEVEL, MOD_DST_PAN, MOD_DST_DRIVE, MOD_DST_SHAPER, MOD_DST_CRUSH, MOD_DST_RATE, MOD_DST_TIMBRE, MOD_DST_LFO1_RATE, MOD_DST_LFO2_RATE, MOD_DSTS };
 enum { LFO_SINE, LFO_TRI, LFO_SAW, LFO_SQUARE, LFO_SH, LFO_SHAPES };
 enum { LFO_RETRIGGER, LFO_FREE, LFO_MODES };
-#define MOD_SLOTS 4u
+#define MOD_SLOTS 8u
+_Static_assert(PV_SLOT_DST0 - PV_SLOT_SRC0 == MOD_SLOTS, "the packet holds each slot");
 #define LFO_BASE_INC 155833u     /* 0.05 Hz at one step per render block */
 
 typedef struct {
@@ -31,6 +32,8 @@ typedef struct {
     env_t amp_env, mod_env;
     lfo_t lfo[2];
     int32_t off[MOD_DSTS];       /* this block's modulation, in packet units Q8 */
+    int32_t random;              /* the random source: one value for the trigger's whole life */
+    int32_t lfo_rate_off[2];     /* the rate offset each LFO's inc holds */
     int32_t gain_l, gain_r;      /* Q15: the level the last block ended at */
     int32_t cut_q8, res_q8;      /* the values a1..a3 were computed from */
     int32_t a1, a2, a3, damp, ic1, ic2;
@@ -192,7 +195,7 @@ static AUDIO_INLINE uint32_t note_inc(int32_t pitch)
     return v + (v >> 8) * (q & 15u);                 /* one 1/16 semitone is 0.36 %, and 1/256 is 0.39 % */
 }
 
-static uint32_t lfo_inc(int32_t rate)
+static AUDIO_INLINE uint32_t lfo_inc(int32_t rate)
 {
     uint32_t r = (uint32_t)clamp(rate, 0, 127);
     return ((LFO_BASE_INC * SEMI_Q12[r % 12u]) >> 12) << (r / 12u);
@@ -270,6 +273,8 @@ static void chain_start(chain_t *c, const pkt_t *p)
     lfo_start(&c->lfo[1], p->v[PV_LFO2_SHAPE], p->v[PV_LFO2_PHASE], p->v[PV_LFO2_RATE], p->v[PV_LFO2_START]);
     for (i = 0; i < MOD_DSTS; i++)
         c->off[i] = 0;
+    c->random = clamp(mod_random(), -32767, 32767);
+    c->lfo_rate_off[0] = c->lfo_rate_off[1] = 0;
     c->gain_l = c->gain_r = 0;
     c->cut_q8 = c->res_q8 = -1;
     chain_filter_update(c, p);
@@ -285,6 +290,16 @@ static AUDIO_INLINE void chain_release(chain_t *c)
     env_release(&c->mod_env);
 }
 
+/* a free LFO's phase comes from its rate and the clock, so a moving rate would throw the phase around */
+static AUDIO_INLINE void chain_lfo_rate(chain_t *c, uint32_t k, int32_t rate)
+{
+    int32_t offset = c->off[MOD_DST_LFO1_RATE + k] >> 8;
+    if (offset != c->lfo_rate_off[k] && c->lfo[k].mode == LFO_RETRIGGER) {
+        c->lfo_rate_off[k] = offset;
+        c->lfo[k].inc = lfo_inc(rate + offset);
+    }
+}
+
 /* runs the sources and the slots for one block; the amount at 127 and a full source move a value by 127 */
 static AUDIO_INLINE void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
 {
@@ -296,12 +311,15 @@ static AUDIO_INLINE void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
     src[MOD_SRC_LFO1] = lfo_block(&c->lfo[0], clock);
     src[MOD_SRC_LFO2] = lfo_block(&c->lfo[1], clock);
     src[MOD_SRC_VEL] = clamp(p->v[PV_VEL], 0, 127) * 258;
+    src[MOD_SRC_RANDOM] = c->random;
     for (i = 0; i < MOD_DSTS; i++)
         c->off[i] = 0;
     for (i = 0; i < MOD_SLOTS; i++) {
         int32_t from = clamp(p->v[PV_SLOT_SRC0 + i], 0, MOD_SRCS - 1), to = clamp(p->v[PV_SLOT_DST0 + i], 0, MOD_DSTS - 1);
         c->off[to] += (src[from] * p->v[PV_SLOT_AMT0 + i]) >> 7;
     }
+    chain_lfo_rate(c, 0, p->v[PV_LFO1_RATE]);
+    chain_lfo_rate(c, 1, p->v[PV_LFO2_RATE]);
 }
 
 static AUDIO_INLINE int32_t softclip(int32_t x)
