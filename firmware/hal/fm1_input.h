@@ -317,12 +317,16 @@ static void fm1__key(uint32_t id, uint32_t closed)
     }
 }
 
+#ifndef FM1_INPUT_INJECT
+#define FM1_INPUT_INJECT(id) 0u                    /* a test build closes a key here: it passes the same debounce */
+#endif
+
 static void fm1__keys(uint32_t p)                  /* the keys of column p, just read */
 {
     uint32_t r, raw = fm1_in.raw[p];
     for (r = 1; r < 5u; r++)
         if (FM1_KEYMAP[r][p] >= 0)
-            fm1__key((uint32_t)FM1_KEYMAP[r][p], (raw >> r) & 1u);
+            fm1__key((uint32_t)FM1_KEYMAP[r][p], ((raw >> r) & 1u) | FM1_INPUT_INJECT((uint32_t)FM1_KEYMAP[r][p]));
 }
 
 static void fm1__frame(void);

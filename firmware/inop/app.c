@@ -22,6 +22,10 @@ void fm1_timer5_irq(void)
     if (++sub == 10u)
         sub = 0;
     if (audio_in_isr) {
+#if FELUCCA_UAC
+        if (usb_due)
+            uac_service();               /* a packet a millisecond, or the recording breaks */
+#endif
         t5_nested_ticks += fm1_ticks() - t0;
         return;
     }
@@ -114,6 +118,9 @@ static void inop_main(void)
         }
         if (usb.uboot_req)
             enter_uboot("UPDATE MODE (USB)");
+#if INOP_PROBE
+        probe_service();
+#endif
         ui_input();
         ui_leds();
         if (++frame % 4u == 0u)

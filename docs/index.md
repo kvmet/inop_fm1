@@ -310,6 +310,20 @@ The amp envelope means the same as on every other engine:
 | 1 | Engine 2 | Noise: level, up to half of the sum |
 | 2 | Engine 2 | Click: a noise burst at the start |
 
+## Test probe
+
+A build with `INOP_PROBE=1` adds a USB serial port and a USB audio input, so a computer can run the device without hands. `tools/inop_probe.py` presses buttons and keys, turns knobs, loads patterns, reads CPU and voice counters, saves screenshots and records the master.
+
+```bash
+python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
+```
+
+- Commands enter below the key debounce, so they run the same UI code as the panel.
+- A recording takes the full level. The MASTER knob sets only the speaker and headphone level.
+- A screenshot redraws the whole screen, so the screen flashes and the UI waits for about a second. The sound continues.
+- macOS 13 to 15 lose the audio input when the serial port is present. macOS 26 keeps both.
+- A release build has none of this.
+
 ## Roadmap
 
 - Sound names, entered on the keyboard: 26 letters and an underscore on the 27 keys.

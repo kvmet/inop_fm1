@@ -71,7 +71,22 @@ static void audio_block(int32_t *out)
     follower_block(globals[G_FOL_ATTACK], globals[G_FOL_RELEASE]);
     AUDIO_FAR(delay_block)(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);
     AUDIO_FAR(reverb_block)(&reverb_fx, reverb_bus, l, r, globals[G_REVERB_SIZE], globals[G_REVERB_DAMP]);
+#if FELUCCA_UAC
+    mp.volume_q12 = MASTER_VOLUME_FULL_Q12;      /* a recording's level does not depend on the MASTER knob */
+#endif
     AUDIO_FAR(master_block)(&master, l, r, &mp);
+#if FELUCCA_UAC
+    {
+        int32_t usb_out[2u * CTL];
+        for (i = 0; i < CTL; i++) {
+            usb_out[2u * i] = l[i];
+            usb_out[2u * i + 1u] = r[i];
+            l[i] = (l[i] * (int32_t)master_q12) >> 12;
+            r[i] = (r[i] * (int32_t)master_q12) >> 12;
+        }
+        uac_tap(usb_out, CTL);
+    }
+#endif
     for (i = 0; i < CTL; i++) {
         out[2u * i] = l[i] * (1 << OUT_SHIFT);
         out[2u * i + 1u] = r[i] * (1 << OUT_SHIFT);
@@ -97,6 +112,9 @@ void fm1_alnk0_irq(void)
     if (p & FM1_AUDIO_HALF) {
         uint32_t half = fm1_audio_free_half(), b, us, load;
         int32_t *o = &abuf[half * HALF_WORDS];
+#if FELUCCA_UAC
+        uac_render_start();
+#endif
         for (b = 0; b < HALF_FRAMES; b += CTL)
             audio_block(o + 2u * b);
         fm1_audio_ack_half();
