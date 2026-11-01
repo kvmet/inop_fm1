@@ -76,8 +76,8 @@ static void wave_start(wave_voice_t *W, const pkt_t *p, uint32_t seed)
     wave_set_bend(W, p->v[PV_E2]);
 }
 
-/* adds one block to out. pitch: an offset in 1/16 semitones. timbre: an offset to WAVE */
-static AUDIO_INLINE void wave_render(wave_voice_t *W, const pkt_t *p, int32_t *out, int32_t pitch, int32_t timbre)
+/* adds one block to out, or makes left in out and right in right, which hold only this voice. pitch: an offset in 1/16 semitones. timbre: an offset to WAVE */
+static AUDIO_INLINE void wave_render(wave_voice_t *W, const pkt_t *p, int32_t *out, int32_t *right, int32_t pitch, int32_t timbre)
 {
     const int16_t (*frames)[sizeof WAVE_DATA[0][0] / sizeof(int16_t)] = WAVE_DATA[wave_table(p->v[PV_E0])];
     int32_t semis = clamp(p->v[PV_E3], -WAVE_PITCH2_MAX, WAVE_PITCH2_MAX), cross = clamp(p->v[PV_E4], -WAVE_CROSS_MAX, WAVE_CROSS_MAX);
@@ -88,6 +88,7 @@ static AUDIO_INLINE void wave_render(wave_voice_t *W, const pkt_t *p, int32_t *o
     uint32_t inc2 = (uint32_t)(((uint64_t)note_inc(p->v[PV_NOTE] * 16 + pitch + semis * 16) * (65536u + (uint32_t)(detune * detune) * 3866u / 16129u)) >> 16);
     uint32_t size1 = wave_size_index(base), size2 = wave_size_index(inc2);
     uint32_t bits1 = WAVE_TOP_BITS - size1, bits2 = WAVE_TOP_BITS - size2, ph1 = W->phase[0], ph2 = W->phase[1];
+    int32_t noise_each = right ? (noise * STEREO_SOURCE_Q15) >> 15 : noise, both[CTL];
     int use2 = level2 || ring || depth;
     const int16_t *frame_a, *frame_b, *frame2;
     uint32_t f, g;
@@ -100,7 +101,7 @@ static AUDIO_INLINE void wave_render(wave_voice_t *W, const pkt_t *p, int32_t *o
     frame2 = wave_size(frames[position - (int32_t)(f << 16) < 0x8000 ? f : g], size2);   /* the nearest: 2 table reads a sample, where a blend takes 4 */
     for (s = 0; s < CTL; s++) {
         uint32_t at = ph1;
-        int32_t y, y2 = 0;
+        int32_t y, y2 = 0, y_right = 0;
         if (use2) {
             y2 = wave_read(frame2, bits2, W->knee ? wave_bend(W, ph2) : ph2);
             at += (uint32_t)((y2 * depth) >> 15) * (1u << WAVE_FM_SHIFT);
@@ -108,14 +109,29 @@ static AUDIO_INLINE void wave_render(wave_voice_t *W, const pkt_t *p, int32_t *o
         y = wave_blend(frame_a, frame_b, bits1, W->knee ? wave_bend(W, at) : at, (position - (int32_t)(f << 16)) >> 1);
         if (ring)
             y += (((y * y2) >> 15) - y) * ring >> 15;
-        y += (y2 * level2) >> 15;
+        if (right) {
+            int32_t parted = (y * level2) >> 15;         /* osc 1 follows OSC2 out of the center, so a quiet osc 2 does not leave it alone on one side */
+            both[s] = ((y - parted) * WAVE_PEAK) >> 15;
+            y = parted;
+            y_right = (y2 * level2) >> 15;
+        } else {
+            y += (y2 * level2) >> 15;
+        }
         if (noise) {
             r ^= r << 13;
             r ^= r >> 17;
             r ^= r << 5;
-            y += (((int32_t)r >> 16) * noise) >> 15;
+            y += (((int32_t)r >> 16) * noise_each) >> 15;
+            if (right) {
+                r ^= r << 13;
+                r ^= r >> 17;
+                r ^= r << 5;
+                y_right += (((int32_t)r >> 16) * noise_each) >> 15;
+            }
         }
         out[s] += (y * WAVE_PEAK) >> 15;
+        if (right)
+            right[s] += (y_right * WAVE_PEAK) >> 15;
         ph1 += base;
         ph2 += inc2;
         position += step;
@@ -124,4 +140,6 @@ static AUDIO_INLINE void wave_render(wave_voice_t *W, const pkt_t *p, int32_t *o
     W->phase[1] = ph2;
     W->position = to;
     W->rng = r;
+    if (right)
+        stereo_mix(out, right, both, p->v[PV_STEREO]);
 }

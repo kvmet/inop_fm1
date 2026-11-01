@@ -69,7 +69,7 @@ static void audio_block(int32_t *out)
     voices_hold_service(&patterns[seq.playing]);
     voices_render(l, r, delay_bus, reverb_bus);
     follower_block(globals[G_FOL_ATTACK], globals[G_FOL_RELEASE]);
-    AUDIO_FAR(delay_block)(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);
+    AUDIO_FAR(delay_block)(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB], globals[G_DELAY_WIDTH]);
     AUDIO_FAR(reverb_block)(&reverb_fx, reverb_bus, l, r, globals[G_REVERB_SIZE], globals[G_REVERB_DAMP]);
 #if FELUCCA_UAC
     mp.volume_q12 = MASTER_VOLUME_FULL_Q12;      /* a recording's level does not depend on the MASTER knob */

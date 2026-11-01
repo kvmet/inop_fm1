@@ -51,6 +51,7 @@ static void probe_tap_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const
 
 #include "libc.c"
 #include "lcd.c"
+#define CV_SECTION               /* .bss, so the pool can hold the delay line in one piece */
 #include "gfx.c"
 
 #include "model.h"

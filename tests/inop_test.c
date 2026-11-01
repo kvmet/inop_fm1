@@ -466,8 +466,8 @@ static void test_fm_index_route_keeps_sound(void)
         int32_t x[CTL] = {0}, y[CTL] = {0};
         chain_mod(&c, &p, b);
         CHECK(abs(chain_fm_index_q15(&c) - (c.mod_env.env >> 9)) <= 3);
-        fm_render(&routed, &p, x, 0, chain_fm_index_q15(&c), 0);
-        fm_render(&wired, &p, y, 0, c.mod_env.env >> 9, 0);
+        fm_render(&routed, &p, x, 0, 0, chain_fm_index_q15(&c), 0);
+        fm_render(&wired, &p, y, 0, 0, c.mod_env.env >> 9, 0);
         for (i = 0; i < CTL; i++) {
             worst = abs(x[i] - y[i]) > worst ? abs(x[i] - y[i]) : worst;
             loudest = abs(y[i]) > loudest ? abs(y[i]) : loudest;
@@ -1017,6 +1017,520 @@ static void test_voice_ratchet_gate(void)
     CHECK(voices[0].hold_blocks == 0 && voices[0].key == KEY_TRACK(2));
 }
 
+/* the amounts of one voice's left and right over many blocks */
+static void stereo_measure(pkt_t *p, double *rms_l, double *rms_r, double *correlation)
+{
+    double ll = 0, rr = 0, lr = 0;
+    uint32_t b, i;
+    p->v[PV_AMP_S] = 127;
+    p->v[PV_SEND_DELAY] = p->v[PV_SEND_REVERB] = 0;
+    memset(voices, 0, sizeof voices);
+    voice_budget = 0xFFFFFFFFu;
+    voice_start(&voices[0], p, KEY_NONE, 0);
+    for (b = 0; b < 3000u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voice_render(&voices[0], l, r, d, w);
+        for (i = 0; b > 200u && i < CTL; i++) {
+            ll += (double)l[i] * l[i];
+            rr += (double)r[i] * r[i];
+            lr += (double)l[i] * r[i];
+        }
+    }
+    *rms_l = sqrt(ll);
+    *rms_r = sqrt(rr);
+    *correlation = ll && rr ? lr / sqrt(ll * rr) : 1.0;
+}
+
+static void stereo_packet(pkt_t *p, int engine)
+{
+    voice_bare_packet(p, (uint32_t)engine);
+    p->v[PV_NOTE] = 48;
+    p->v[PV_LEVEL] = 104;
+    p->v[PV_MOD_S] = 127;                               /* FM's index holds: a carrier other than C follows it */
+}
+
+static void test_stereo_engines(void)
+{
+    static const int ENGINE_LIST[3] = {ENGINE_SWARM, ENGINE_WAVE, ENGINE_FM};
+    pkt_t p;
+    double l, r, correlation, mono_l, mono_r, l40, r40, correlation40;
+    uint32_t i, alg;
+    for (i = 0; i < 3u; i++) {
+        stereo_packet(&p, ENGINE_LIST[i]);
+        p.v[PV_E5] = ENGINE_LIST[i] == ENGINE_SWARM ? 0 : 127;   /* SWARM's sub is in both channels */
+        if (ENGINE_LIST[i] == ENGINE_FM) {
+            p.v[PV_E4] = 127;
+            p.v[PV_E7] = 40;                            /* B1 and B2 share a ratio: without detune they match */
+        }
+        stereo_measure(&p, &mono_l, &mono_r, &correlation);
+        CHECK(correlation > 0.9999 && fabs(mono_l - mono_r) < 1.0);   /* spread 0: one channel */
+        p.v[PV_STEREO] = 127;
+        stereo_measure(&p, &l, &r, &correlation);
+        CHECK(correlation < 0.7);                       /* the channels part */
+        CHECK(l > 1000.0 && r > 1000.0);
+        CHECK(fabs(20.0 * log10(l / mono_l)) < 2.5);    /* and spread keeps the level */
+        CHECK(fabs(20.0 * log10(r / mono_r)) < 2.5);
+        p.v[PV_STEREO] = 40;
+        stereo_measure(&p, &l40, &r40, &correlation40);
+        CHECK(correlation40 > correlation);             /* less spread is less apart */
+    }
+    stereo_packet(&p, ENGINE_SWARM);
+    p.v[PV_E5] = 0;
+    p.v[PV_STEREO] = 127;
+    stereo_measure(&p, &l, &r, &correlation);
+    CHECK(fabs(20.0 * log10(l / r)) < 1.5);             /* SWARM's sides match */
+    for (alg = FM_ALG_TWO_CARRIERS; alg < FM_ALGS; alg++) {
+        stereo_packet(&p, ENGINE_FM);
+        p.v[PV_E0] = (int8_t)alg;
+        p.v[PV_E4] = p.v[PV_E5] = 127;
+        p.v[PV_E7] = 40;
+        p.v[PV_STEREO] = 127;
+        stereo_measure(&p, &l, &r, &correlation);
+        CHECK(correlation < 0.7);
+    }
+}
+
+/* what stays in both keeps its level, and a quiet source does not pull the voice to one side */
+static void test_stereo_center_and_balance(void)
+{
+    pkt_t p;
+    double l, r, correlation, mono_l, mono_r;
+    stereo_packet(&p, ENGINE_SWARM);
+    p.v[PV_E4] = 1;                                     /* the center and the sub, and the sides almost silent */
+    stereo_measure(&p, &mono_l, &mono_r, &correlation);
+    p.v[PV_STEREO] = 127;
+    stereo_measure(&p, &l, &r, &correlation);
+    CHECK(fabs(20.0 * log10(l / mono_l)) < 0.5);
+    CHECK(fabs(20.0 * log10(r / mono_r)) < 0.5);
+    stereo_packet(&p, ENGINE_WAVE);
+    p.v[PV_E7] = 0;
+    p.v[PV_E4] = 0;
+    p.v[PV_E5] = 8;
+    stereo_measure(&p, &mono_l, &mono_r, &correlation);
+    p.v[PV_STEREO] = 127;
+    stereo_measure(&p, &l, &r, &correlation);
+    CHECK(fabs(20.0 * log10(l / r)) < 1.0);
+    CHECK(fabs(20.0 * log10(l / mono_l)) < 0.5);
+    stereo_packet(&p, ENGINE_WAVE);
+    p.v[PV_E4] = 0;
+    p.v[PV_E5] = 1;
+    p.v[PV_E7] = 127;                                   /* noise: each side's own, at the level of a mono voice's one */
+    stereo_measure(&p, &mono_l, &mono_r, &correlation);
+    p.v[PV_STEREO] = 127;
+    stereo_measure(&p, &l, &r, &correlation);
+    CHECK(fabs(20.0 * log10(l / mono_l)) < 1.0);
+    CHECK(correlation < 0.7);
+    {
+        uint32_t alg;
+        for (alg = FM_ALG_TWO_CARRIERS; alg < FM_ALGS; alg++) {
+            stereo_packet(&p, ENGINE_FM);
+            p.v[PV_E0] = (int8_t)alg;
+            p.v[PV_E5] = p.v[PV_E4] = 0;                /* only C sounds */
+            stereo_measure(&p, &mono_l, &mono_r, &correlation);
+            p.v[PV_STEREO] = 127;
+            stereo_measure(&p, &l, &r, &correlation);
+            CHECK(correlation > 0.999);
+            CHECK(fabs(20.0 * log10(l / mono_l)) < 0.5);
+        }
+    }
+}
+
+/* a voice with one sound to part stays mono, and pays nothing */
+static void test_stereo_only_with_two_sources(void)
+{
+    pkt_t p;
+    double l, r, correlation;
+    uint32_t alg, op;
+    sound_init(&p, 0);
+    p.v[PV_STEREO] = 127;
+    for (alg = 0; alg < FM_ALGS; alg++) {
+        uint32_t carriers = 0;
+        for (op = 0; op < FM_OPS; op++)
+            carriers += (uint32_t)fm_is_carrier(alg, op);
+        p.v[PV_ENGINE] = ENGINE_FM;
+        p.v[PV_E0] = (int8_t)alg;
+        CHECK(voice_stereo(&p) == (carriers > 1u));
+    }
+    p.v[PV_STEREO] = 0;
+    CHECK(!voice_stereo(&p));
+    p.v[PV_STEREO] = 127;
+    p.v[PV_ENGINE] = ENGINE_PERC;
+    CHECK(!voice_stereo(&p));
+    p.v[PV_ENGINE] = ENGINE_SWARM;
+    p.v[PV_E4] = 0;
+    CHECK(!voice_stereo(&p));                           /* the center oscillator alone */
+    p.v[PV_E4] = 1;
+    CHECK(voice_stereo(&p));
+    p.v[PV_ENGINE] = ENGINE_WAVE;
+    p.v[PV_E5] = 0;
+    CHECK(!voice_stereo(&p));                           /* no oscillator 2 */
+    p.v[PV_E5] = 1;
+    CHECK(voice_stereo(&p));
+    stereo_packet(&p, ENGINE_FM);
+    p.v[PV_E0] = 0;
+    p.v[PV_STEREO] = 127;
+    stereo_measure(&p, &l, &r, &correlation);
+    CHECK(correlation > 0.9999);
+    memset(stereo_cost, 0, sizeof stereo_cost);
+    memset(cost_effect, 0, sizeof cost_effect);
+    stereo_cost[ENGINE_WAVE] = 500;
+    voice_cost[ENGINE_WAVE] = 1000;
+    cost_effect[COST_FILTER] = 10;
+    cost_effect[COST_SHAPER] = 20;
+    cost_effect[COST_DRIVE] = 40;
+    cost_effect[COST_CRUSH] = 80;
+    cost_effect[COST_RATE] = 160;
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = ENGINE_WAVE;
+    p.v[PV_FLT_TYPE] = FLT_OFF;
+    p.v[PV_SHAPER] = p.v[PV_DRIVE] = p.v[PV_CRUSH] = p.v[PV_RATE] = 0;
+    for (alg = 0; alg < MOD_SLOTS; alg++)
+        p.v[PV_SLOT_SRC0 + alg] = MOD_SRC_OFF;
+    p.v[PV_E5] = 10;
+    CHECK(voice_charge(&p) == 1000u);
+    p.v[PV_STEREO] = 1;
+    CHECK(voice_charge(&p) == 1500u);                   /* a wide voice takes more of the budget */
+    p.v[PV_FLT_TYPE] = FLT_LP;
+    CHECK(voice_charge(&p) == 1510u);                   /* and the second run of each effect it uses */
+    p.v[PV_DRIVE] = 1;
+    CHECK(voice_charge(&p) == 1550u);
+    p.v[PV_DRIVE] = 0;
+    p.v[PV_SLOT_SRC0] = MOD_SRC_LFO1;
+    p.v[PV_SLOT_DST0] = MOD_DST_RATE;
+    p.v[PV_SLOT_AMT0] = 30;
+    CHECK(voice_charge(&p) == 1670u);                   /* a route can turn an effect on */
+    p.v[PV_SLOT_AMT0] = 0;
+    CHECK(voice_charge(&p) == 1510u);
+    p.v[PV_E5] = 0;
+    CHECK(voice_charge(&p) == 1000u);
+    memset(cost_effect, 0, sizeof cost_effect);
+    swarm_base_cost = 1000u;
+    swarm_edge_cost = 256u;
+    stereo_cost[ENGINE_SWARM] = 100u;
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = ENGINE_SWARM;
+    p.v[PV_E4] = 64;
+    {
+        uint32_t edges = swarm_edges_q8(&p);
+        CHECK(edges > 0u);
+        CHECK(voice_charge(&p) == 1000u + edges);
+        p.v[PV_STEREO] = 40;
+        CHECK(voice_charge(&p) == 1000u + edges + 100u + edges);   /* each edge goes to both channels */
+    }
+    swarm_base_cost = swarm_edge_cost = 0;
+    stereo_cost[ENGINE_SWARM] = 0;
+    stereo_cost[ENGINE_WAVE] = 0;
+    voice_cost[ENGINE_WAVE] = 0;
+}
+
+/* spread 0 at the mix gives what the mono render gives, in both channels */
+static void test_stereo_keeps_the_signal(void)
+{
+    pkt_t p;
+    int32_t mono[CTL], a[CTL], b[CTL];
+    uint32_t block, i;
+    {
+        swarm_voice_t one, two;
+        stereo_packet(&p, ENGINE_SWARM);
+        swarm_start(&one, &p, 1234u);
+        swarm_start(&two, &p, 1234u);
+        for (block = 0; block < 500u; block++) {
+            memset(mono, 0, sizeof mono);
+            memset(a, 0, sizeof a);
+            memset(b, 0, sizeof b);
+            swarm_render(&one, &p, mono, 0, 0, 0);
+            swarm_render(&two, &p, a, b, 0, 0);
+            for (i = 0; block > 50u && i < CTL; i++) {
+                CHECK(abs(mono[i] - a[i]) < 400);
+                CHECK(a[i] == b[i]);
+            }
+        }
+    }
+    {
+        wave_voice_t one, two;
+        stereo_packet(&p, ENGINE_WAVE);
+        p.v[PV_E7] = 0;
+        wave_start(&one, &p, 1234u);
+        wave_start(&two, &p, 1234u);
+        for (block = 0; block < 200u; block++) {
+            memset(mono, 0, sizeof mono);
+            memset(a, 0, sizeof a);
+            memset(b, 0, sizeof b);
+            wave_render(&one, &p, mono, 0, 0, 0);
+            wave_render(&two, &p, a, b, 0, 0);
+            for (i = 0; i < CTL; i++) {
+                CHECK(abs(mono[i] - a[i]) <= 3);
+                CHECK(a[i] == b[i]);
+            }
+        }
+    }
+    {
+        uint32_t alg;
+        for (alg = FM_ALG_TWO_CARRIERS; alg < FM_ALGS; alg++) {
+            fm_voice_t one, two;
+            stereo_packet(&p, ENGINE_FM);
+            p.v[PV_E0] = (int8_t)alg;
+            fm_start(&one, &p);
+            fm_start(&two, &p);
+            for (block = 0; block < 200u; block++) {
+                memset(mono, 0, sizeof mono);
+                memset(a, 0, sizeof a);
+                memset(b, 0, sizeof b);
+                fm_render(&one, &p, mono, 0, 0, 16384, 0);
+                fm_render(&two, &p, a, b, 0, 16384, 0);
+                for (i = 0; block > 20u && i < CTL; i++) {
+                    CHECK(abs(mono[i] - a[i]) < 8);
+                    CHECK(a[i] == b[i]);
+                }
+            }
+        }
+    }
+}
+
+/* a note that waits for a fade counts at once: every voice rendering at once must fit */
+static void test_voice_budget_counts_fades(void)
+{
+    enum { COST = 1800, FIT = 6 };
+    pkt_t p;
+    uint32_t round, t, b, i;
+    uint32_t saved_cost = voice_cost[ENGINE_WAVE], saved_wide = stereo_cost[ENGINE_WAVE], saved_budget = voice_budget, saved_dropped = voices_dropped;
+    memset(voices, 0, sizeof voices);
+    voice_cost[ENGINE_WAVE] = COST;
+    stereo_cost[ENGINE_WAVE] = 0;
+    voice_budget = COST * FIT + 100u;
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = ENGINE_WAVE;
+    p.v[PV_AMP_S] = 127;
+    for (round = 0; round < 40u; round++) {
+        for (t = 0; t < FIT; t++) {
+            p.v[PV_NOTE] = (int8_t)(40 + t);
+            voice_trigger(&p, KEY_NONE, 0);
+            {
+                uint32_t rendering = 0;
+                for (i = 0; i < NVOICE; i++)
+                    rendering += voices[i].active ? voices[i].charge : 0u;
+                CHECK(rendering <= voice_budget);
+            }
+        }
+        for (b = 0; b < 12u; b++) {
+            int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+            uint32_t rendering = 0;
+            voices_render(l, r, d, w);
+            for (i = 0; i < NVOICE; i++)
+                rendering += voices[i].active ? voices[i].charge : 0u;
+            CHECK(rendering <= voice_budget);
+        }
+    }
+    CHECK(voices_dropped == saved_dropped);             /* the notes wait for a fade, and none is lost */
+    CHECK(voices_active() == FIT);
+    voice_cost[ENGINE_WAVE] = saved_cost;
+    stereo_cost[ENGINE_WAVE] = saved_wide;
+    voice_budget = saved_budget;
+    memset(voices, 0, sizeof voices);
+}
+
+/* a side has one oscillator from each octave, and its detunes near cancel */
+static void test_stereo_swarm_sides(void)
+{
+    uint32_t side, i, octave_mode = 1u;
+    for (side = SWARM_LEFT; side <= SWARM_RIGHT; side++) {
+        int32_t detune = 0, count = 0, low = 0, mid = 0, high = 0;
+        for (i = 0; i < SWARM_OSCS; i++) {
+            if (SWARM_SIDE[i] != side)
+                continue;
+            detune += SWARM_DETUNE[i];
+            count++;
+            low += SWARM_OCTAVE_Q8[octave_mode][i] == 128;
+            mid += SWARM_OCTAVE_Q8[octave_mode][i] == 256;
+            high += SWARM_OCTAVE_Q8[octave_mode][i] == 512;
+        }
+        CHECK(count == 3 && low == 1 && mid == 1 && high == 1);
+        CHECK(abs(detune) < 1500);
+    }
+    CHECK(SWARM_SIDE[SWARM_CENTER] == SWARM_BOTH);
+}
+
+/* the sends hear the mean of the channels, and the follower hears the louder */
+static void test_stereo_sends_and_follower(void)
+{
+    pkt_t p;
+    chain_t c;
+    int32_t x[CTL], y[CTL], l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+    uint32_t b, i;
+    sound_init(&p, 0);
+    p.v[PV_FLT_TYPE] = FLT_OFF;
+    p.v[PV_AMP_A] = 0;
+    p.v[PV_AMP_S] = 127;
+    p.v[PV_SEND_DELAY] = 127;
+    p.v[PV_SEND_REVERB] = 0;
+    p.v[PV_SEND_FOLLOW] = 127;
+    chain_start(&c, &p);
+    for (b = 0; b < 300u; b++) {
+        for (i = 0; i < CTL; i++) {
+            x[i] = 0;
+            y[i] = 12000;
+            l[i] = r[i] = d[i] = w[i] = 0;
+        }
+        follower_input = 0;
+        chain_render(&c, &p, x, y, l, r, d, w);
+    }
+    CHECK(l[CTL - 1u] == 0 && r[CTL - 1u] > 1000);
+    CHECK(abs(d[CTL - 1u] - ((r[CTL - 1u] * 254) >> 9)) < 8);   /* the mean of 0 and r, at the send's Q8 */
+    CHECK(follower_input > 8000);                               /* the right channel alone drives it */
+}
+
+/* each channel has its own filter memory: shared, the two would write over each other */
+static void test_stereo_filters_each_channel(void)
+{
+    pkt_t p;
+    chain_t both, one, same;
+    int32_t sine_a[CTL], sine_b[CTL], alone[CTL];
+    uint32_t b, i, t = 0;
+    sound_init(&p, 0);
+    p.v[PV_FLT_TYPE] = FLT_LP;
+    p.v[PV_FLT_CUT] = 60;
+    p.v[PV_AMP_S] = 127;
+    p.v[PV_SEND_DELAY] = p.v[PV_SEND_REVERB] = 0;
+    chain_start(&both, &p);
+    chain_start(&one, &p);
+    p.v[PV_DRIVE] = 40;
+    p.v[PV_SHAPER] = 40;
+    p.v[PV_CRUSH] = 40;
+    p.v[PV_RATE] = 40;
+    chain_start(&both, &p);
+    chain_start(&one, &p);
+    chain_start(&same, &p);
+    for (b = 0; b < 200u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, ol[CTL] = {0}, or_[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0}, sl[CTL] = {0}, sr[CTL] = {0}, same_l[CTL], same_r[CTL];
+        for (i = 0; i < CTL; i++, t++) {
+            sine_a[i] = (int32_t)(8000.0 * sin(t * 0.01));
+            sine_b[i] = (int32_t)(8000.0 * sin(t * 0.37));
+            alone[i] = sine_a[i];
+            same_l[i] = same_r[i] = sine_b[i];
+        }
+        chain_render(&both, &p, sine_a, sine_b, l, r, d, w);
+        chain_render(&one, &p, alone, 0, ol, or_, d, w);
+        chain_render(&same, &p, same_l, same_r, sl, sr, d, w);
+        for (i = 0; i < CTL; i++) {
+            CHECK(l[i] == ol[i]);                       /* left does not hear right */
+            CHECK(sl[i] == sr[i]);                      /* and right has every stage left has */
+        }
+    }
+}
+
+/* an impulse's repeats, by the sample each lands on */
+static void delay_impulse(delay_t *d, uint32_t samples, int32_t feedback, int32_t width, int32_t *left, int32_t *right, uint32_t count)
+{
+    uint32_t b, i;
+    memset(d, 0, sizeof *d);
+    for (b = 0; b * CTL < count; b++) {
+        int32_t in[CTL] = {0}, l[CTL] = {0}, r[CTL] = {0};
+        in[0] = b ? 0 : 16000;
+        delay_block(d, in, l, r, samples, feedback, width);
+        for (i = 0; i < CTL; i++) {
+            left[b * CTL + i] = l[i];
+            right[b * CTL + i] = r[i];
+        }
+    }
+}
+
+static int32_t delay_peak_near(const int32_t *x, uint32_t at)
+{
+    int32_t peak = 0;
+    uint32_t i;
+    for (i = at - 4u; i < at + 8u; i++)
+        peak = abs(x[i]) > peak ? abs(x[i]) : peak;
+    return peak;
+}
+
+static void test_delay_ping_pong(void)
+{
+    enum { HOP = 1000, COUNT = 8000 };
+    static delay_t d;
+    static int32_t l[COUNT + CTL], r[COUNT + CTL];
+    int32_t first, second, third;
+    delay_impulse(&d, HOP, 100, 127, l, r, COUNT);
+    first = delay_peak_near(l, HOP);
+    second = delay_peak_near(r, 2u * HOP);
+    third = delay_peak_near(l, 3u * HOP);
+    CHECK(first > 20000);                               /* -3 dB would hold the power of a repeat in both channels */
+    CHECK(second > first / 2 && second < first);        /* a repeat loses the same each hop */
+    CHECK(third > second / 2 && third < second);
+    CHECK(delay_peak_near(r, HOP) == 0);                /* each lands on one side only */
+    CHECK(delay_peak_near(l, 2u * HOP) == 0);
+    CHECK(delay_peak_near(r, 3u * HOP) == 0);
+    delay_impulse(&d, HOP, 100, 64, l, r, COUNT);
+    CHECK(delay_peak_near(r, HOP) > 1000 && delay_peak_near(r, HOP) < delay_peak_near(l, HOP));
+    CHECK(delay_peak_near(l, 2u * HOP) > 1000 && delay_peak_near(l, 2u * HOP) < delay_peak_near(r, 2u * HOP));
+    delay_impulse(&d, HOP, 100, 0, l, r, COUNT);
+    {
+        uint32_t i;
+        for (i = 0; i < COUNT; i++)
+            CHECK(l[i] == r[i]);
+    }
+    CHECK(delay_peak_near(l, HOP) == 16000);
+    {
+        static int32_t long_l[50000 + CTL], long_r[50000 + CTL];
+        delay_impulse(&d, 30000, 100, 127, long_l, long_r, 50000);
+        CHECK(delay_peak_near(long_l, DELAY_HOP_MAX) > 20000);      /* the hop stops at half of the line */
+        CHECK(delay_peak_near(long_r, 2u * DELAY_HOP_MAX) > 1000);
+    }
+}
+
+/* the repeats of a sound written just before the line wraps land on time */
+static void test_delay_wraps(void)
+{
+    enum { HOP = 1000, BEFORE_WRAP = 200 };
+    static delay_t d;
+    uint32_t total = 0, b, i, at = DELAY_LEN - BEFORE_WRAP;
+    int32_t first = 0, second = 0, stray = 0;
+    memset(&d, 0, sizeof d);
+    for (b = 0; total < at + 3u * HOP; b++) {
+        int32_t in[CTL] = {0}, l[CTL] = {0}, r[CTL] = {0};
+        for (i = 0; i < CTL; i++)
+            in[i] = total + i == at ? 16000 : 0;
+        delay_block(&d, in, l, r, HOP, 100, 127);
+        for (i = 0; i < CTL; i++, total++) {
+            if (total == at + HOP)
+                first = l[i];
+            else if (total == at + 2u * HOP)
+                second = r[i];
+            else if (total < at + 2u * HOP && total != at + HOP)
+                stray = abs(l[i]) > stray ? abs(l[i]) : stray;
+        }
+    }
+    CHECK(first > 20000);
+    CHECK(second != 0);
+    CHECK(stray == 0);
+}
+
+/* width 0 is the delay it always was: one line, one read, damping and feedback once per repeat */
+static void test_delay_width_0_matches_one_read(void)
+{
+    enum { HOP = 1500 };
+    static delay_t d;
+    static int16_t line[DELAY_LEN];
+    uint32_t w = 0, b, i;
+    int32_t lp = 0, fb = 90 * DELAY_FB_MAX / 127, worst = 0;
+    memset(line, 0, sizeof line);
+    memset(&d, 0, sizeof d);
+    for (b = 0; b < 2000u; b++) {
+        int32_t in[CTL], l[CTL] = {0}, r[CTL] = {0};
+        for (i = 0; i < CTL; i++)
+            in[i] = b < 100u ? (int32_t)(9000.0 * sin((b * CTL + i) * 0.03)) : 0;
+        delay_block(&d, in, l, r, HOP, 90, 0);
+        for (i = 0; i < CTL; i++) {
+            int32_t x = line[(w + DELAY_LEN - HOP) % DELAY_LEN], error;
+            lp += ((x - lp) * (32767 - DELAY_DAMP)) >> 15;
+            line[w] = (int16_t)clamp(in[i] + ((lp * fb) >> 15), -32768, 32767);
+            w = (w + 1u) % DELAY_LEN;
+            error = abs(l[i] - x);
+            worst = error > worst ? error : worst;
+        }
+    }
+    CHECK(worst <= 8);
+}
+
 static void test_stop_and_start(void)
 {
     seq_t q;
@@ -1388,7 +1902,7 @@ static int32_t render_tone(chain_t *c, const pkt_t *p, int32_t a, int32_t *l, in
     }
     {
         int32_t delay[CTL] = {0}, reverb[CTL] = {0};
-        return chain_render(c, p, x, l, r, delay, reverb);
+        return chain_render(c, p, x, 0, l, r, delay, reverb);
     }
 }
 
@@ -1489,7 +2003,7 @@ static void test_effects(void)
     p.v[PV_CRUSH] = 127;
     for (i = 0; i < CTL; i++)
         x[i] = (int32_t)i * 100 - 1600;
-    chain_effects(&c, &p, x);
+    chain_effects(&c, &c.path[0], &p, x);
     for (i = 0; i < CTL; i++)
         CHECK((x[i] & 8191) == 0);                      /* 13 low bits gone */
     packet_default(&p);
@@ -1497,21 +2011,21 @@ static void test_effects(void)
     chain_start(&c, &p);
     for (i = 0; i < CTL; i++)
         x[i] = (int32_t)i;
-    chain_effects(&c, &p, x);
+    chain_effects(&c, &c.path[0], &p, x);
     CHECK(x[0] == 0 && x[10] == 0 && x[11] == 11);      /* held 11 samples */
     packet_default(&p);
     p.v[PV_DRIVE] = 127;
     chain_start(&c, &p);
     for (i = 0; i < CTL; i++)
         x[i] = 30000;
-    chain_effects(&c, &p, x);
+    chain_effects(&c, &c.path[0], &p, x);
     CHECK(x[0] <= TANH_Q15[256]);
     packet_default(&p);
     p.v[PV_SHAPER] = 127;
     chain_start(&c, &p);
     for (i = 0; i < CTL; i++)
         x[i] = i & 1u ? 60000 : -60000;
-    chain_effects(&c, &p, x);
+    chain_effects(&c, &c.path[0], &p, x);
     CHECK(peak(x) <= 32767);
 }
 
@@ -1697,7 +2211,7 @@ static void test_mod_opens_filter(void)
                 l[i] = r[i] = 0;
             }
             chain_mod(&c, &p, 0);
-            { int32_t delay[CTL] = {0}, reverb[CTL] = {0}; chain_render(&c, &p, x, l, r, delay, reverb); }
+            { int32_t delay[CTL] = {0}, reverb[CTL] = {0}; chain_render(&c, &p, x, 0, l, r, delay, reverb); }
         }
         if (a)
             opened = peak(l);
@@ -1742,7 +2256,7 @@ static void test_delay_repeats_at_its_time(void)
     for (b = 0; b < 40; b++) {
         memset(l, 0, sizeof l);
         memset(r, 0, sizeof r);
-        delay_block(&d, b ? zero : in, l, r, 1000, 80);
+        delay_block(&d, b ? zero : in, l, r, 1000, 80, 0);
         for (i = 0; i < CTL; i++, total++)
             if (first_at < 0 && l[i] != 0)
                 first_at = (int32_t)total;
@@ -1771,7 +2285,7 @@ static void test_delay_decays_at_full_feedback(void)
     for (b = 0; b < 60000u; b++) {
         memset(l, 0, sizeof l);
         memset(r, 0, sizeof r);
-        delay_block(&d, b < 30u ? in : zero, l, r, 2000, 127);
+        delay_block(&d, b < 30u ? in : zero, l, r, 2000, 127, 0);
         CHECK(l[0] <= 32767 && l[0] >= -32768);
         if (b >= 100u && b < 500u)
             early += energy(l);
@@ -1786,11 +2300,11 @@ static void test_delay_time_glides(void)
     static delay_t d;
     int32_t zero[CTL] = {0}, l[CTL], r[CTL];
     memset(&d, 0, sizeof d);
-    delay_block(&d, zero, l, r, 1000, 0);
+    delay_block(&d, zero, l, r, 1000, 0, 0);
     CHECK(d.delay_cur == 1000u);
-    delay_block(&d, zero, l, r, 2000, 0);
+    delay_block(&d, zero, l, r, 2000, 0, 0);
     CHECK(d.delay_cur == 1000u + CTL);
-    delay_block(&d, zero, l, r, 100, 0);
+    delay_block(&d, zero, l, r, 100, 0, 0);
     CHECK(d.delay_cur == 1000u);
 }
 
@@ -2179,7 +2693,7 @@ static void test_fm_loops_match_routes(void)
         inc[FM_B2] = fm_op_inc(note_inc(57 * 16), 3, detune / 2);
         for (b = 0; b < 40u; b++) {
             int32_t out[CTL] = {0};
-            fm_render(&f, &p, out, 0, 32768, 0);
+            fm_render(&f, &p, out, 0, 0, 32768, 0);
             for (s = 0; s < CTL; s++) {
                 int32_t val[FM_OPS], y = 0, x;
                 for (op = FM_OPS; op-- > 0;) {
@@ -2225,7 +2739,7 @@ static double fm_power_at(const pkt_t *p, uint32_t inc, int32_t mod_q15)
     while (n < N) {
         int32_t out[CTL] = {0};
         uint32_t i;
-        fm_render(&f, p, out, 0, mod_q15, 0);
+        fm_render(&f, p, out, 0, 0, mod_q15, 0);
         for (i = 0; i < CTL && n < N; i++, n++) {
             double window = n < N / 2 ? n : N - n;
             re += window * out[i] * SINE[ph >> 22];
@@ -2304,7 +2818,7 @@ static void test_fm_level_bound(void)
                     fm_start(&f, &p);
                     for (block = 0; block < 300u; block++) {
                         int32_t out[CTL] = {0};
-                        fm_render(&f, &p, out, 0, 32768, 0);
+                        fm_render(&f, &p, out, 0, 0, 32768, 0);
                         for (i = 0; i < CTL; i++)
                             worst = abs(out[i]) > worst ? abs(out[i]) : worst;
                     }
@@ -2325,7 +2839,7 @@ static void test_fm_removes_offset(void)
     fm_start(&f, &p);
     for (b = 0; n < samples; b++) {
         int32_t out[CTL] = {0};
-        fm_render(&f, &p, out, 0, 32768, 0);
+        fm_render(&f, &p, out, 0, 0, 32768, 0);
         for (i = 0; b >= 400u && i < CTL && n < samples; i++, n++)
             sum += out[i];
     }
@@ -2355,7 +2869,7 @@ static void swarm_samples(const pkt_t *p, int32_t *buf, uint32_t n, uint32_t ski
     for (b = 0; i < n; b++) {
         int32_t out[CTL] = {0};
         uint32_t s;
-        swarm_render(&S, p, out, 0, timbre);
+        swarm_render(&S, p, out, 0, 0, timbre);
         for (s = 0; b >= skip && s < CTL && i < n; s++)
             buf[i++] = out[s];
     }
@@ -2521,7 +3035,7 @@ static uint32_t swarm_kinks(const pkt_t *p, int move, int32_t limit)
         int32_t out[CTL] = {0};
         uint32_t s;
         int32_t timbre = move == SHAPE_SWEEPS ? abs((int32_t)(b % 128u) - 64) : move == SHAPE_JUMPS ? (int32_t)((b / 64u) & 1u) * 63 : 0;
-        swarm_render(&S, p, out, 0, timbre);
+        swarm_render(&S, p, out, 0, 0, timbre);
         b++;
         for (s = 0; s < CTL && n < SWARM_N; s++)
             swarm_buf[n++] = out[s];
@@ -2569,8 +3083,8 @@ static void test_swarm_edge_across_blocks(void)
     swarm_packet(&p, SWARM_UNISON, 45, 0, 0, 0, 0, 0, 0);
     swarm_start(&S, &p, 1u);
     S.phase[SWARM_CENTER] = 0u - inc * 31u - inc / 2u;
-    swarm_render(&S, &p, o, 0, 0);
-    swarm_render(&S, &p, o + CTL, 0, 0);
+    swarm_render(&S, &p, o, 0, 0, 0);
+    swarm_render(&S, &p, o + CTL, 0, 0, 0);
     CHECK(o[CTL - 1u] > SWARM_PEAK / 3 && o[CTL] < -SWARM_PEAK / 3);
     CHECK(abs(o[CTL - 1u] + o[CTL]) < SWARM_PEAK / 10);   /* a lone sample at the far side of the step would miss by 1/4 of the peak */
 }
@@ -2615,7 +3129,7 @@ static void test_swarm_drift(void)
     swarm_start(&S, &p, 7);
     for (b = 0; b < 8000u; b++) {
         int32_t out[CTL] = {0};
-        swarm_render(&S, &p, out, 0, 0);
+        swarm_render(&S, &p, out, 0, 0, 0);
         for (i = 0; i < SWARM_OSCS; i++) {
             worst = abs(S.drift[i]) > worst ? abs(S.drift[i]) : worst;
             moved += S.drift[i] != 0;
@@ -2627,7 +3141,7 @@ static void test_swarm_drift(void)
     swarm_start(&S, &p, 7);
     for (b = 0; b < 2000u; b++) {
         int32_t out[CTL] = {0};
-        swarm_render(&S, &p, out, 0, 0);
+        swarm_render(&S, &p, out, 0, 0, 0);
     }
     for (i = 0; i < SWARM_OSCS; i++)
         CHECK(S.drift[i] == 0);
@@ -2676,7 +3190,7 @@ static void wave_samples(const pkt_t *p, int32_t timbre_step)
     while (i < SWARM_N) {
         int32_t out[CTL] = {0};
         uint32_t s;
-        wave_render(&W, p, out, 0, timbre);
+        wave_render(&W, p, out, 0, 0, timbre);
         timbre += timbre_step;
         for (s = 0; s < CTL && i < SWARM_N; s++)
             swarm_buf[i++] = out[s];
@@ -2729,7 +3243,7 @@ static void test_wave_jump(void)
         p.v[PV_E1] = TO[k];
         for (b = 0; b < WAVE_FRAMES; b++) {
             int32_t out[CTL] = {0};
-            wave_render(&W, &p, out, 0, 0);
+            wave_render(&W, &p, out, 0, 0, 0);
             worst = peak(out) > worst ? peak(out) : worst;
         }
         CHECK(W.position == settled);
@@ -3047,7 +3561,7 @@ static void test_shape_keeps_punch(void)
         for (b = 0; b < 2u; b++) {
             for (i = 0; i < CTL; i++)
                 x[i] = 8000;
-            chain_effects(&c, &folded, x);
+            chain_effects(&c, &c.path[0], &folded, x);
         }
         CHECK(abs(x[CTL - 1u]) < 4000);
     }
@@ -3415,6 +3929,17 @@ int main(void)
     test_seq_human();
     test_seq_offset_limit();
     test_voice_ratchet_gate();
+    test_delay_ping_pong();
+    test_delay_wraps();
+    test_delay_width_0_matches_one_read();
+    test_voice_budget_counts_fades();
+    test_stereo_engines();
+    test_stereo_swarm_sides();
+    test_stereo_sends_and_follower();
+    test_stereo_center_and_balance();
+    test_stereo_only_with_two_sources();
+    test_stereo_keeps_the_signal();
+    test_stereo_filters_each_channel();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

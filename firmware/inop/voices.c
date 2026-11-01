@@ -6,9 +6,10 @@
 #define BUDGET_PERCENT 70u       /* of a block's time. The rest covers the sequencer, the key scan and flash writes */
 typedef struct {
     pkt_t pkt, next;             /* next: the trigger that starts when this stolen voice has faded */
-    uint8_t active, key, has_next, next_key;
+    uint8_t active, key, has_next, next_key, wide;
     uint32_t age;
     uint32_t charge;             /* what this voice counts for against the budget */
+    uint32_t next_charge;
     uint32_t hold_blocks, next_hold;   /* a sequenced note's blocks left before release; 0 = none */
     chain_t chain;
     union {
@@ -23,6 +24,7 @@ static voice_t voices[NVOICE] __attribute__((section(".pool")));
 static uint32_t voice_clock;
 static uint32_t mod_clock;       /* render blocks since boot: free-running LFOs read it */
 static uint32_t voice_cost[ENGINES];     /* ticks of one block, measured at boot */
+static uint32_t stereo_cost[ENGINES];    /* ticks a wide voice adds */
 static uint32_t swarm_base_cost, swarm_edge_cost;   /* ticks of a block with no edges, and ticks per edge: a SWARM note's cost depends on its pitch */
 static uint32_t voice_budget = 0xFFFFFFFFu;
 enum { COST_FILTER, COST_SHAPER, COST_DRIVE, COST_CRUSH, COST_RATE, COST_EFFECTS };
@@ -33,15 +35,45 @@ static volatile uint32_t voices_stolen;    /* voices cut short or never heard; o
 
 static AUDIO_INLINE int voice_engine(const pkt_t *p) { return clamp(p->v[PV_ENGINE], 0, ENGINES - 1); }
 
+/* an engine with one voice of sound, such as FM with one carrier, has nothing to part */
+static int voice_stereo(const pkt_t *p)
+{
+    int engine = voice_engine(p);
+    if (p->v[PV_STEREO] <= 0)
+        return 0;
+    return engine == ENGINE_SWARM ? p->v[PV_E4] > 0 : engine == ENGINE_WAVE ? p->v[PV_E5] > 0 : engine == ENGINE_FM && fm_alg(p->v[PV_E0]) >= FM_ALG_TWO_CARRIERS;
+}
+
+/* a mono charge covers every effect. A wide voice's second channel runs only the effects this sound uses: a value above 0 or a route */
+static uint32_t voice_wide_charge(const pkt_t *p)
+{
+    static const struct { uint8_t id, dst, cost; } EFFECTS[] = {
+        {PV_SHAPER, MOD_DST_SHAPER, COST_SHAPER}, {PV_DRIVE, MOD_DST_DRIVE, COST_DRIVE}, {PV_CRUSH, MOD_DST_CRUSH, COST_CRUSH}, {PV_RATE, MOD_DST_RATE, COST_RATE},
+    };
+    uint32_t extra = stereo_cost[voice_engine(p)] + (p->v[PV_FLT_TYPE] != FLT_OFF ? cost_effect[COST_FILTER] : 0u), e, i;
+    for (e = 0; e < sizeof EFFECTS / sizeof EFFECTS[0]; e++) {
+        int on = p->v[EFFECTS[e].id] > 0;
+        for (i = 0; i < MOD_SLOTS && !on; i++)
+            on = p->v[PV_SLOT_DST0 + i] == EFFECTS[e].dst && p->v[PV_SLOT_SRC0 + i] != MOD_SRC_OFF && p->v[PV_SLOT_AMT0 + i] != 0;
+        if (on)
+            extra += cost_effect[EFFECTS[e].cost];
+    }
+    if (voice_engine(p) == ENGINE_SWARM)
+        extra += (swarm_edges_q8(p) * swarm_edge_cost) >> 8;   /* each edge is written to both channels */
+    return extra;
+}
+
 static uint32_t voice_charge(const pkt_t *p)
 {
-    return voice_engine(p) == ENGINE_SWARM ? swarm_base_cost + ((swarm_edges_q8(p) * swarm_edge_cost) >> 8) : voice_cost[voice_engine(p)];
+    uint32_t mono = voice_engine(p) == ENGINE_SWARM ? swarm_base_cost + ((swarm_edges_q8(p) * swarm_edge_cost) >> 8) : voice_cost[voice_engine(p)];
+    return voice_stereo(p) ? mono + voice_wide_charge(p) : mono;
 }
 
 static void voice_start(voice_t *v, const pkt_t *p, uint32_t key, uint32_t hold_blocks)
 {
     v->pkt = *p;
     v->charge = voice_charge(p);
+    v->wide = (uint8_t)voice_stereo(p);
     v->key = (uint8_t)key;
     v->hold_blocks = hold_blocks;
     v->age = ++voice_clock;
@@ -86,10 +118,13 @@ static void voice_trigger(const pkt_t *p, uint32_t key, uint32_t hold_blocks)
     uint32_t cost = voice_charge(p), prio = (uint32_t)clamp(p->v[PV_PRIO], 0, PRIOS - 1), total = 0, i;
     voice_t *free_voice = 0, *stolen = 0;
     for (i = 0; i < NVOICE; i++) {
-        if (!voices[i].active && !free_voice)
-            free_voice = &voices[i];
-        else if (voices[i].active && !voice_fading(&voices[i]))
-            total += voices[i].charge;
+        const voice_t *v = &voices[i];
+        if (!v->active) {
+            if (!free_voice)
+                free_voice = &voices[i];
+            continue;
+        }
+        total += v->has_next ? v->next_charge : voice_fading(v) ? 0u : v->charge;   /* a waiting note counts now: wide voices are costly enough that NVOICE at once would overrun the block */
     }
     while ((total && total + cost > voice_budget) || (!free_voice && !stolen)) {   /* one voice always sounds */
         steal_t info[NVOICE];
@@ -115,6 +150,7 @@ static void voice_trigger(const pkt_t *p, uint32_t key, uint32_t hold_blocks)
     }
     if (stolen) {
         stolen->next = *p;
+        stolen->next_charge = cost;
         stolen->next_key = (uint8_t)key;
         stolen->next_hold = hold_blocks;
         stolen->has_next = 1;
@@ -193,22 +229,24 @@ static uint32_t voices_active(void)
 
 AUDIO_RAM static void voice_render(voice_t *v, int32_t *l, int32_t *r, int32_t *delay_bus, int32_t *reverb_bus)
 {
-    int32_t x[CTL], alive = 1;
+    int32_t x[CTL], x_right[CTL], *right = v->wide ? x_right : 0, alive = 1;
     uint32_t k;
     if (v->hold_blocks && !--v->hold_blocks)
         voice_release(v);
     for (k = 0; k < CTL; k++)
         x[k] = 0;
+    for (k = 0; right && k < CTL; k++)
+        x_right[k] = 0;
     chain_mod(&v->chain, &v->pkt, mod_clock);
     if (voice_engine(&v->pkt) == ENGINE_PERC)
         alive = perc_render(&v->engine.perc, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.off[MOD_DST_TIMBRE] >> 8);
     else if (voice_engine(&v->pkt) == ENGINE_SWARM)
-        swarm_render(&v->engine.swarm, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.off[MOD_DST_TIMBRE] >> 8);
+        swarm_render(&v->engine.swarm, &v->pkt, x, right, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.off[MOD_DST_TIMBRE] >> 8);
     else if (voice_engine(&v->pkt) == ENGINE_WAVE)
-        wave_render(&v->engine.wave, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.off[MOD_DST_TIMBRE] >> 8);
+        wave_render(&v->engine.wave, &v->pkt, x, right, v->chain.off[MOD_DST_PITCH] >> 7, v->chain.off[MOD_DST_TIMBRE] >> 8);
     else
-        fm_render(&v->engine.fm, &v->pkt, x, v->chain.off[MOD_DST_PITCH] >> 7, chain_fm_index_q15(&v->chain), v->chain.off[MOD_DST_TIMBRE] >> 8);
-    alive &= chain_render(&v->chain, &v->pkt, x, l, r, delay_bus, reverb_bus);
+        fm_render(&v->engine.fm, &v->pkt, x, right, v->chain.off[MOD_DST_PITCH] >> 7, chain_fm_index_q15(&v->chain), v->chain.off[MOD_DST_TIMBRE] >> 8);
+    alive &= chain_render(&v->chain, &v->pkt, x, right, l, r, delay_bus, reverb_bus);
     if (alive)
         return;
     v->active = 0;
@@ -331,6 +369,17 @@ static void voices_measure(void)
         cost_alone[variant] = voice_slowest_block(v, &p);
         cost_shared[variant] = voices_slowest_shared(&p);
     }
+    for (variant = 0; variant < ENGINES; variant++) {        /* with no effects: a block's first run is slower, so mono runs twice */
+        uint32_t mono, wide;
+        voice_bare_packet(&p, variant);
+        (void)voice_slowest_block(v, &p);
+        mono = voice_slowest_block(v, &p);
+        p.v[PV_STEREO] = 127;
+        if (voice_stereo(&p)) {
+            wide = voice_slowest_block(v, &p);
+            stereo_cost[variant] = wide > mono ? wide - mono : 0u;
+        }
+    }
     voice_bare_packet(&p, ENGINE_FM);
     for (i = 0; i < COST_EFFECTS; i++) {
         pkt_t q = p;
@@ -361,7 +410,7 @@ static void voices_measure(void)
         for (i = 0; i < CTL; i++)
             l[i] = r[i] = d[i] = w[i] = 10000;
         t0 = fm1_ticks();
-        AUDIO_FAR(delay_block)(&delay_fx, d, l, r, 1000, 64);
+        AUDIO_FAR(delay_block)(&delay_fx, d, l, r, 1000, 64, 64);
         t1 = fm1_ticks();
         AUDIO_FAR(reverb_block)(&reverb_fx, w, l, r, 64, 64);
         t2 = fm1_ticks();

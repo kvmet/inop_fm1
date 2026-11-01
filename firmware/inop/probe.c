@@ -95,6 +95,15 @@ static void probe_report(void)
     probe_stat("cost_delay_us", (int32_t)cost_delay);
     probe_stat("cost_reverb_us", (int32_t)cost_reverb);
     probe_stat("cost_master_us", (int32_t)cost_master);
+    probe_stat("cost_alone_fm", (int32_t)cost_alone[ENGINE_FM]);
+    probe_stat("cost_alone_swarm", (int32_t)cost_alone[ENGINE_SWARM]);
+    probe_stat("cost_alone_wave", (int32_t)cost_alone[ENGINE_WAVE]);
+    probe_stat("cost_voice_fm", (int32_t)voice_cost[ENGINE_FM]);
+    probe_stat("cost_voice_swarm", (int32_t)voice_cost[ENGINE_SWARM]);
+    probe_stat("cost_voice_wave", (int32_t)voice_cost[ENGINE_WAVE]);
+    probe_stat("cost_stereo_fm", (int32_t)stereo_cost[ENGINE_FM]);
+    probe_stat("cost_stereo_swarm", (int32_t)stereo_cost[ENGINE_SWARM]);
+    probe_stat("cost_stereo_wave", (int32_t)stereo_cost[ENGINE_WAVE]);
     probe_stat("bpm", (int32_t)ui.bpm);
     probe_stat("seq_run", seq.run);
     probe_stat("pattern", seq.playing);

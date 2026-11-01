@@ -3,8 +3,8 @@
 #ifndef POOL_SECTION
 #define POOL_SECTION
 #endif
-#define DELAY_LEN 32768u         /* 0.74 s; a power of 2: masked */
-#define DELAY_MASK (DELAY_LEN - 1u)
+#define DELAY_LEN 44100u
+#define DELAY_HOP_MAX ((DELAY_LEN - 1u) / 2u)   /* 0.5 s, 4 steps at 120 BPM: a hop is half of the line */
 #define DELAY_DAMP 6000          /* of 32768: the repeats lose their top */
 #define DELAY_FB_MAX 31000       /* below unity at full feedback, so repeats always decay */
 #define REV_BUF_LEN 4096u        /* a power of 2: masked. Holds every line of the loop, at 22 kHz */
@@ -14,7 +14,7 @@
 typedef struct {
     int16_t delay[DELAY_LEN];
     uint32_t delay_w, delay_cur;
-    int32_t delay_lp;
+    int32_t delay_lp, delay_lp_loop;
 } delay_t;
 
 /* the delay lines share one circular buffer and one moving position, so a read is an add and a mask, with no wrap to check */
@@ -24,24 +24,35 @@ typedef struct {
     int32_t feedback, lp[2], last_l, last_r;
 } reverb_t;
 
-static delay_t delay_fx;
+static delay_t delay_fx POOL_SECTION;
 static reverb_t reverb_fx POOL_SECTION;
 
-/* adds the repeats to l and r. samples: the delay time; it glides there, so a change bends pitch and does not click */
-AUDIO_RAM static void delay_block(delay_t *d, const int32_t *in, int32_t *l, int32_t *r, uint32_t samples, int32_t feedback)
+/* back <= DELAY_HOP_MAX * 2, so one wrap is enough */
+static AUDIO_INLINE int32_t delay_read(const delay_t *d, uint32_t back)
 {
-    int32_t fb = clamp(feedback, 0, 127) * DELAY_FB_MAX / 127;
+    return d->delay[d->delay_w >= back ? d->delay_w - back : d->delay_w + DELAY_LEN - back];
+}
+
+/* adds the repeats to l and r. samples: the time between repeats; it glides there, so a change bends pitch and does not click.
+ * Each loop around the line is two repeats: the odd one to the left, read one hop back, and the even one to the right, read two hops back.
+ * width: 0 sends both to both channels. Feedback and damping run once per repeat at any width */
+AUDIO_RAM static void delay_block(delay_t *d, const int32_t *in, int32_t *l, int32_t *r, uint32_t samples, int32_t feedback, int32_t width)
+{
+    int32_t fb = clamp(feedback, 0, 127) * DELAY_FB_MAX / 127, near, far;
     uint32_t i;
-    samples = samples >= DELAY_LEN ? DELAY_LEN - 1u : samples < 16u ? 16u : samples;
+    samples = samples > DELAY_HOP_MAX ? DELAY_HOP_MAX : samples < 16u ? 16u : samples;
     if (d->delay_cur < 16u)
         d->delay_cur = samples;
+    stereo_gains(width, &near, &far);
     for (i = 0; i < CTL; i++) {
-        int32_t x = d->delay[(d->delay_w - d->delay_cur) & DELAY_MASK];
-        d->delay_lp += ((x - d->delay_lp) * (32767 - DELAY_DAMP)) >> 15;
-        d->delay[d->delay_w & DELAY_MASK] = (int16_t)clamp(in[i] + ((d->delay_lp * fb) >> 15), -32768, 32767);
-        d->delay_w++;
-        l[i] += x;
-        r[i] += x;
+        int32_t odd = delay_read(d, d->delay_cur), even = delay_read(d, 2u * d->delay_cur);
+        d->delay_lp += ((even - d->delay_lp) * (32767 - DELAY_DAMP)) >> 15;
+        even = (d->delay_lp * fb) >> 15;
+        d->delay_lp_loop += ((even - d->delay_lp_loop) * (32767 - DELAY_DAMP)) >> 15;
+        d->delay[d->delay_w] = (int16_t)clamp(in[i] + ((d->delay_lp_loop * fb) >> 15), -32768, 32767);
+        d->delay_w = d->delay_w + 1u < DELAY_LEN ? d->delay_w + 1u : 0u;
+        l[i] += (odd * near + even * far) >> 12;
+        r[i] += (even * near + odd * far) >> 12;
         if (d->delay_cur != samples)
             d->delay_cur += d->delay_cur < samples ? 1u : (uint32_t)-1;
     }

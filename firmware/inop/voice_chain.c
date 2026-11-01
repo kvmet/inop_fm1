@@ -27,6 +27,14 @@ typedef struct {
     uint8_t shape, mode;
 } lfo_t;
 
+/* what a channel of the chain remembers. A wide voice runs two */
+typedef struct {
+    int32_t ic1, ic2;
+    int32_t hold;
+    uint32_t hold_left;
+    int32_t shape_level, shape_gain;   /* Q15 */
+} chain_path_t;
+
 typedef struct {
     env_t amp_env, mod_env, mod2_env;
     lfo_t lfo[2];
@@ -36,10 +44,8 @@ typedef struct {
     int32_t lfo_rate_off[2];     /* the rate offset each LFO's inc holds */
     int32_t gain_l, gain_r;      /* Q15: the level the last block ended at */
     int32_t cut_q8, res_q8;      /* the values a1..a3 were computed from */
-    int32_t a1, a2, a3, damp, ic1, ic2;
-    int32_t hold;
-    uint32_t hold_left;
-    int32_t shape_level, shape_gain;   /* Q15 */
+    int32_t a1, a2, a3, damp;
+    chain_path_t path[2];
 } chain_t;
 
 static uint32_t mod_rng = 0x2F6E2B1u;
@@ -310,10 +316,12 @@ static void chain_start(chain_t *c, const pkt_t *p)
     c->gain_l = c->gain_r = 0;
     c->cut_q8 = c->res_q8 = -1;
     chain_filter_update(c, p);
-    c->ic1 = c->ic2 = 0;
-    c->hold = 0;
-    c->hold_left = 0;
-    c->shape_level = c->shape_gain = 0;
+    for (i = 0; i < 2u; i++) {
+        c->path[i].ic1 = c->path[i].ic2 = 0;
+        c->path[i].hold = 0;
+        c->path[i].hold_left = 0;
+        c->path[i].shape_level = c->path[i].shape_gain = 0;
+    }
 }
 
 static AUDIO_INLINE void chain_release(chain_t *c)
@@ -402,6 +410,30 @@ static int32_t mod_route_slot(const pkt_t *p, int32_t src, int32_t dst)
     return -1;
 }
 
+/* Q12 gains of a source on its own side and the other. Near rises 3 dB as far falls, which holds the power of uncorrelated sources */
+#define STEREO_UNITY_Q12 4096
+#define STEREO_NEAR_RISE_Q12 1697
+#define STEREO_SOURCE_Q15 23170  /* -3 dB: two uncorrelated sources where a mono voice has one */
+static AUDIO_INLINE void stereo_gains(int32_t spread, int32_t *near, int32_t *far)
+{
+    int32_t amount = clamp(spread, 0, 127);
+    *near = STEREO_UNITY_Q12 + STEREO_NEAR_RISE_Q12 * amount / 127;
+    *far = STEREO_UNITY_Q12 - STEREO_UNITY_Q12 * amount / 127;
+}
+
+/* a wide voice's left and right sources to left and right, in place, plus what stays in both */
+static AUDIO_INLINE void stereo_mix(int32_t *left, int32_t *right, const int32_t *both, int32_t spread)
+{
+    int32_t near, far;
+    uint32_t i;
+    stereo_gains(spread, &near, &far);
+    for (i = 0; i < CTL; i++) {
+        int32_t x = left[i], y = right[i];
+        left[i] = ((x * near + y * far) >> 12) + both[i];
+        right[i] = ((y * near + x * far) >> 12) + both[i];
+    }
+}
+
 static AUDIO_INLINE int32_t softclip(int32_t x)
 {
     int32_t a = x < 0 ? -x : x, i = a >> 8, y;
@@ -422,7 +454,7 @@ static AUDIO_INLINE int32_t wavefold(int32_t x)
 /* folding alone would hold the level at full scale until the driven signal falls under it. This gain follows the input's
  * level until then. Below that point the folded signal falls by itself, and 1 / drive scales it back to the input's level.
  * The follower's 47 ms is long enough that a low note's own cycle does not move the gain */
-static AUDIO_INLINE void chain_shape(chain_t *c, int32_t *x, int32_t shape)
+static AUDIO_INLINE void chain_shape(chain_path_t *c, int32_t *x, int32_t shape)
 {
     int32_t drive_q4 = 16 + shape * shape * 240 / 16129;     /* 127 drives by 16 */
     int32_t floor = 32768 * 16 / drive_q4, peak = 0, target, ramp = c->shape_gain * (1 << CTL_BITS);
@@ -443,7 +475,7 @@ static AUDIO_INLINE void chain_shape(chain_t *c, int32_t *x, int32_t shape)
 }
 
 /* cheap effects in place; each is skipped at 0 */
-static AUDIO_INLINE void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
+static AUDIO_INLINE void chain_effects(const chain_t *c, chain_path_t *path, const pkt_t *p, int32_t *x)
 {
     int32_t drive = clamp(p->v[PV_DRIVE] + (c->off[MOD_DST_DRIVE] >> 8), 0, 127);
     int32_t shape = clamp(p->v[PV_SHAPER] + (c->off[MOD_DST_SHAPER] >> 8), 0, 127);
@@ -451,7 +483,7 @@ static AUDIO_INLINE void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
     int32_t rate = clamp(p->v[PV_RATE] + (c->off[MOD_DST_RATE] >> 8), 0, 127);
     uint32_t i;
     if (shape)
-        chain_shape(c, x, shape);
+        chain_shape(path, x, shape);
     if (drive)
         for (i = 0; i < CTL; i++)
             x[i] = softclip(clamp(x[i], -60000, 60000) * (8 + drive) >> 3);
@@ -463,27 +495,27 @@ static AUDIO_INLINE void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
     if (rate) {
         uint32_t every = 1u + (uint32_t)rate / 3u;
         for (i = 0; i < CTL; i++) {
-            if (!c->hold_left) {
-                c->hold = x[i];
-                c->hold_left = every;
+            if (!path->hold_left) {
+                path->hold = x[i];
+                path->hold_left = every;
             }
-            c->hold_left--;
-            x[i] = c->hold;
+            path->hold_left--;
+            x[i] = path->hold;
         }
     }
 }
 
-static AUDIO_INLINE void chain_filter(chain_t *c, uint32_t type, int32_t *x)
+static AUDIO_INLINE void chain_filter(const chain_t *c, chain_path_t *path, uint32_t type, int32_t *x)
 {
     uint32_t i;
     if (type == FLT_OFF)
         return;
     for (i = 0; i < CTL; i++) {
-        int32_t in = x[i], v3 = in - c->ic2;
-        int32_t v1 = (c->a1 * c->ic1 + c->a2 * v3) >> 13;
-        int32_t v2 = c->ic2 + ((c->a2 * c->ic1 + c->a3 * v3) >> 13);
-        c->ic1 = clamp(2 * v1 - c->ic1, -150000, 150000);
-        c->ic2 = clamp(2 * v2 - c->ic2, -150000, 150000);
+        int32_t in = x[i], v3 = in - path->ic2;
+        int32_t v1 = (c->a1 * path->ic1 + c->a2 * v3) >> 13;
+        int32_t v2 = path->ic2 + ((c->a2 * path->ic1 + c->a3 * v3) >> 13);
+        path->ic1 = clamp(2 * v1 - path->ic1, -150000, 150000);
+        path->ic2 = clamp(2 * v2 - path->ic2, -150000, 150000);
         x[i] = type == FLT_LP ? v2 : type == FLT_BP ? v1 : in - ((c->damp * v1) >> 12) - v2;
     }
 }
@@ -503,38 +535,54 @@ static AUDIO_INLINE void chain_follow_send(const chain_t *c, const int32_t *x, i
         follower_input = level;
 }
 
-/* adds one block to l, r and the send buses; x is the engine's block and is overwritten. 0 when the envelope has ended */
-static AUDIO_INLINE int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int32_t *r, int32_t *delay_bus, int32_t *reverb_bus)
+/* a block from each channel to l and r. Inlined with one channel for both, a mono voice pays for one clamp */
+static AUDIO_INLINE void chain_output(chain_t *c, int32_t *x, const int32_t *x_right, int32_t *l, int32_t *r, int32_t target_l, int32_t target_r)
+{
+    int32_t ramp_l = c->gain_l * (1 << CTL_BITS), ramp_r = c->gain_r * (1 << CTL_BITS);
+    uint32_t i;
+    for (i = 0; i < CTL; i++) {
+        int32_t y_l = clamp(x[i], -60000, 60000), y_r = clamp(x_right[i], -60000, 60000);
+        ramp_l += target_l - c->gain_l;
+        ramp_r += target_r - c->gain_r;
+        y_l = (y_l * (ramp_l >> (CTL_BITS + 4))) >> 11;
+        y_r = (y_r * (ramp_r >> (CTL_BITS + 4))) >> 11;
+        l[i] += y_l;
+        r[i] += y_r;
+        x[i] = (y_l + y_r) >> 1;
+    }
+}
+
+/* adds one block to l, r and the send buses; x is the engine's block and is overwritten. x_right: a wide voice's right channel, or 0. 0 when the envelope has ended */
+static AUDIO_INLINE int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *x_right, int32_t *l, int32_t *r, int32_t *delay_bus, int32_t *reverb_bus)
 {
     int32_t vel = clamp(p->v[PV_VEL], 0, 127);
     int32_t lvl = LEVEL_Q12[clamp(p->v[PV_LEVEL] + (c->off[MOD_DST_LEVEL] >> 8), 0, 127)] * vel * vel / (127 * 127);  /* velocity: 64 is -12 dB */
     int32_t pan = clamp(p->v[PV_PAN] + (c->off[MOD_DST_PAN] >> 8), -63, 63);
     int32_t gl = 4096 - (pan > 0 ? pan * 4096 / 63 : 0), gr = 4096 + (pan < 0 ? pan * 4096 / 63 : 0);
     int32_t delay_q8 = clamp(p->v[PV_SEND_DELAY], 0, 127) * 2, reverb_q8 = clamp(p->v[PV_SEND_REVERB], 0, 127) * 2;
-    int32_t amp, target_l, target_r, ramp_l, ramp_r;
-    uint32_t i;
-    chain_effects(c, p, x);
-    if (clamp(p->v[PV_FLT_TYPE], 0, FLT_TYPES - 1) != FLT_OFF)
+    int32_t amp, target_l, target_r;
+    uint32_t i, type = (uint32_t)clamp(p->v[PV_FLT_TYPE], 0, FLT_TYPES - 1);
+    chain_effects(c, &c->path[0], p, x);
+    if (x_right)
+        chain_effects(c, &c->path[1], p, x_right);
+    if (type != FLT_OFF)
         chain_filter_update(c, p);
-    chain_filter(c, (uint32_t)clamp(p->v[PV_FLT_TYPE], 0, FLT_TYPES - 1), x);
+    chain_filter(c, &c->path[0], type, x);
+    if (x_right)
+        chain_filter(c, &c->path[1], type, x_right);
     env_block(&c->amp_env);
-    if (p->v[PV_SEND_FOLLOW] > 0)
+    if (p->v[PV_SEND_FOLLOW] > 0) {
         chain_follow_send(c, x, p->v[PV_SEND_FOLLOW]);
+        if (x_right)
+            chain_follow_send(c, x_right, p->v[PV_SEND_FOLLOW]);
+    }
     amp = ((c->amp_env.env >> 9) * lvl) >> 12;
     target_l = (amp * gl) >> 12;
     target_r = (amp * gr) >> 12;
-    ramp_l = c->gain_l * (1 << CTL_BITS);
-    ramp_r = c->gain_r * (1 << CTL_BITS);
-    for (i = 0; i < CTL; i++) {
-        int32_t y = clamp(x[i], -60000, 60000);
-        ramp_l += target_l - c->gain_l;
-        ramp_r += target_r - c->gain_r;
-        x[i] = (y * (ramp_l >> (CTL_BITS + 4))) >> 11;
-        y = (y * (ramp_r >> (CTL_BITS + 4))) >> 11;
-        l[i] += x[i];
-        r[i] += y;
-        x[i] = (x[i] + y) >> 1;
-    }
+    if (x_right)
+        chain_output(c, x, x_right, l, r, target_l, target_r);
+    else
+        chain_output(c, x, x, l, r, target_l, target_r);
     if (delay_q8)
         for (i = 0; i < CTL; i++)
             delay_bus[i] += (x[i] * delay_q8) >> 8;

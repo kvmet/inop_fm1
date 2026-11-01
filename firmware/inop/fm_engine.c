@@ -27,7 +27,7 @@ typedef struct {
     int32_t feedback;            /* Q15 */
     int32_t held[2];             /* B2's last two outputs */
     int32_t mix_gain;            /* FM_PEAK shared by the carriers */
-    int32_t dc;                  /* Q8 */
+    int32_t dc, dc_right;        /* Q8 */
 } fm_voice_t;
 
 static AUDIO_INLINE uint32_t fm_alg(int32_t v) { return (uint32_t)clamp(v, 0, FM_ALGS - 1); }
@@ -60,7 +60,7 @@ static void fm_start(fm_voice_t *f, const pkt_t *p)
     f->feedback = fm_squared(p->v[PV_E6], 16384);    /* B2 moves its own phase by 1 cycle at most */
     f->held[0] = f->held[1] = 0;
     f->mix_gain = FM_PEAK / (int32_t)carriers;
-    f->dc = 0;
+    f->dc = f->dc_right = 0;
 }
 
 /* phase per sample, or 0 over Nyquist. ratio: a knob value. detune: Q16 */
@@ -94,9 +94,13 @@ static AUDIO_INLINE uint32_t fm_op_inc(uint32_t base, int32_t ratio, int32_t det
     }
 
 /* adds one block to out. pitch: an offset in 1/16 semitones. index_q15: what the mod routes make of the index. timbre: an offset to both indexes */
-static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, int32_t pitch, int32_t index_q15, int32_t timbre)
+/* the first algorithm with more than one carrier. A carrier other than C follows its index, so C and the sides are kept apart: a side can go silent and C stays centered */
+#define FM_ALG_TWO_CARRIERS 4u
+
+/* adds one block to out, or with right and two or more carriers, makes left in out and right in right, which hold only this voice */
+static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, int32_t *right, int32_t pitch, int32_t index_q15, int32_t timbre)
 {
-    int32_t y[CTL];
+    int32_t y[CTL], y2[CTL], both[CTL];
     int32_t target_a = (fm_squared(p->v[PV_E4] + timbre, 32767) * index_q15) >> 15, target_b = (fm_squared(p->v[PV_E5] + timbre, 32767) * index_q15) >> 15;
     int32_t depth_a = f->gain_a, depth_b = f->gain_b, step_a = (target_a - depth_a) / (int32_t)(CTL / FM_DEPTH_STEP), step_b = (target_b - depth_b) / (int32_t)(CTL / FM_DEPTH_STEP);
     int32_t h1 = f->held[0], h2 = f->held[1], fb = f->feedback, detune = fm_squared(p->v[PV_E7], 16384);   /* 1/4 is 1 semitone */
@@ -106,39 +110,69 @@ static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, 
     uint32_t pc = f->phase[FM_C], pa = f->phase[FM_A], pb1 = f->phase[FM_B1], pb2 = f->phase[FM_B2];
     f->gain_a = target_a;
     f->gain_b = target_b;
-    switch (fm_alg(p->v[PV_E0])) {
-    case 0:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, FM_M(b1, db));
-                y[s] = FM_SIN(pc, FM_M(a, da));)
-        break;
-    case 1:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, 0);
-                y[s] = FM_SIN(pc, FM_M(a, da) + FM_M(b1, db));)
-        break;
-    case 2:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
-                y[s] = FM_SIN(pc, FM_M(a, da) + FM_M(b1, db) + FM_M(b2, db));)
-        break;
-    case 3:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, FM_M(b1, db) + FM_M(b2, db));
-                y[s] = FM_SIN(pc, FM_M(a, da));)
-        break;
-    case 4:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, 0);
-                y[s] = FM_SIN(pc, FM_M(a, da)) + FM_M(b1, db);)
-        break;
-    case 5:
-        FM_LOOP(int32_t m = FM_M(b2, db), b1 = FM_SIN(pb1, m), a = FM_SIN(pa, m);
-                y[s] = FM_SIN(pc, m) + FM_M(a, da) + FM_M(b1, db);)
-        break;
-    case 6:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
-                y[s] = FM_SIN(pc, FM_M(a, da)) + FM_M(b1, db) + FM_M(b2, db);)
-        break;
-    default:
-        FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
-                y[s] = FM_SIN(pc, 0) + FM_M(a, da) + FM_M(b1, db) + FM_M(b2, db);)
-        break;
+    if (right && fm_alg(p->v[PV_E0]) >= FM_ALG_TWO_CARRIERS) {
+        switch (fm_alg(p->v[PV_E0])) {
+        case 4:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, 0);
+                    int32_t c = FM_SIN(pc, FM_M(a, da));
+                    y[s] = FM_M(c, db);
+                    both[s] = c - y[s];
+                    y2[s] = FM_M(b1, db);)
+            break;
+        case 5:
+            FM_LOOP(int32_t m = FM_M(b2, db), b1 = FM_SIN(pb1, m), a = FM_SIN(pa, m), c = FM_SIN(pc, m);
+                    both[s] = c;
+                    y[s] = FM_M(a, da);
+                    y2[s] = FM_M(b1, db);)
+            break;
+        case 6:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0), c = FM_SIN(pc, FM_M(a, da));
+                    both[s] = c;
+                    y[s] = FM_M(b1, db);
+                    y2[s] = FM_M(b2, db);)
+            break;
+        default:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
+                    both[s] = FM_SIN(pc, 0) + FM_M(b1, db);
+                    y[s] = FM_M(a, da);
+                    y2[s] = FM_M(b2, db);)
+            break;
+        }
+    } else {
+        switch (fm_alg(p->v[PV_E0])) {
+        case 0:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, FM_M(b1, db));
+                    y[s] = FM_SIN(pc, FM_M(a, da));)
+            break;
+        case 1:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, 0);
+                    y[s] = FM_SIN(pc, FM_M(a, da) + FM_M(b1, db));)
+            break;
+        case 2:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
+                    y[s] = FM_SIN(pc, FM_M(a, da) + FM_M(b1, db) + FM_M(b2, db));)
+            break;
+        case 3:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, FM_M(b1, db) + FM_M(b2, db));
+                    y[s] = FM_SIN(pc, FM_M(a, da));)
+            break;
+        case 4:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, FM_M(b2, db)), a = FM_SIN(pa, 0);
+                    y[s] = FM_SIN(pc, FM_M(a, da)) + FM_M(b1, db);)
+            break;
+        case 5:
+            FM_LOOP(int32_t m = FM_M(b2, db), b1 = FM_SIN(pb1, m), a = FM_SIN(pa, m);
+                    y[s] = FM_SIN(pc, m) + FM_M(a, da) + FM_M(b1, db);)
+            break;
+        case 6:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
+                    y[s] = FM_SIN(pc, FM_M(a, da)) + FM_M(b1, db) + FM_M(b2, db);)
+            break;
+        default:
+            FM_LOOP(int32_t b1 = FM_SIN(pb1, 0), a = FM_SIN(pa, 0);
+                    y[s] = FM_SIN(pc, 0) + FM_M(a, da) + FM_M(b1, db) + FM_M(b2, db);)
+            break;
+        }
     }
     f->phase[FM_C] = pc;
     f->phase[FM_A] = pa;
@@ -146,6 +180,14 @@ static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, 
     f->phase[FM_B2] = pb2;
     f->held[0] = h1;
     f->held[1] = h2;
+    if (right && fm_alg(p->v[PV_E0]) >= FM_ALG_TWO_CARRIERS) {
+        stereo_mix(y, y2, both, p->v[PV_STEREO]);
+        for (s = 0; s < CTL; s++) {
+            int32_t x = y2[s] * 256 - f->dc_right;
+            f->dc_right += x >> 10;
+            right[s] += ((x >> 8) * f->mix_gain) >> 15;
+        }
+    }
     for (s = 0; s < CTL; s++) {
         int32_t x = y[s] * 256 - f->dc;
         f->dc += x >> 10;                                /* a one-pole high-pass, ~7 Hz: feedback puts a sideband at 0 Hz */

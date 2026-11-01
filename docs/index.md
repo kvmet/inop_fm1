@@ -75,6 +75,15 @@ Hold LFO or ENV and turn a knob on any page. That knob's value does not change. 
 - **No free slot:** the bottom row shows `SLOTS FULL`.
 - **Page change:** LFO and ENV change the page on release, and not after a route.
 
+### Stereo
+
+STEREO, on the Sends page, parts a sound's oscillators into left and right, 0 to 127. Each channel then has its own effects and filter. At 0 a voice is mono and costs what it did. A wide voice takes more of the voice budget: an engine's extra cost, measured at boot, plus a second run of each effect the sound uses. An effect counts when its value is above 0 or a route points at it. A note that waits for a voice to fade counts against the budget at once. A sound that stays in both channels keeps its level, and sounds that part keep their power.
+
+- **SWARM:** sharp and flat oscillators alternate left and right, one of each octave per side. The center oscillator and the sub stay in both. With SIDES at 0 only the center sounds, so the voice stays mono.
+- **WAVE:** oscillator 2 goes right. Oscillator 1 moves left as OSC2 rises and stays centered while OSC2 is quiet. Each side has its own noise. With OSC2 at 0 the voice stays mono.
+- **FM:** algorithms 5 to 8 have more than one carrier, and the carriers part. C stays centered, except in algorithm 5, where it moves left as the B index rises. A carrier other than C follows its index, so the width follows the mod envelope. In algorithm 7, B1 and B2 share a ratio, so they part only with DETUNE or feedback. Algorithms 1 to 4 have one carrier and stay mono.
+- **Perc:** mono.
+
 ## Follower
 
 The follower turns audio into a modulation source, such as a kick that ducks the pads.
@@ -97,7 +106,7 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 | Mod envelope 1, Mod envelope 2 | | attack | decay | sustain | release | |
 | Filter | | type | cutoff | resonance | key tracking | |
 | Effects | delay send | shaper | bit crush | rate reduce | drive | reverb send |
-| Sends | | delay send | reverb send | follower send | | |
+| Sends | | delay send | reverb send | follower send | stereo | |
 | LFO 1, LFO 2 | | shape | phase mode | rate | start phase | |
 | Mod slots | slot number | source | destination | amount | | |
 | Engine 1 | engine | E1 | E2 | E3 | E4 | patch or model |
@@ -107,11 +116,11 @@ The engine sets what the 8 engine values mean. The mod slots page lists all 8 ro
 
 Delay and reverb settings are project values and are not in the packet. The Global page shows them and the tempo.
 
-| Page | SEL | Knob 1 | Knob 2 | Knob 3 | Knob 4 |
-| --- | --- | --- | --- | --- | --- |
-| Global | BPM | delay time, 1 to 16 steps | delay feedback | reverb size | reverb damping |
+| Page | SEL | Knob 1 | Knob 2 | Knob 3 | Knob 4 | ALGO |
+| --- | --- | --- | --- | --- | --- | --- |
+| Global | BPM | delay time, 1 to 16 steps | delay feedback | reverb size | reverb damping | delay width |
 
-The delay holds at most 0.74 s. A longer setting stops at that length. A change of time glides, so it bends pitch and does not click. The delay is mono, and the reverb is stereo.
+A repeat comes at most 0.5 s after the last one, which is 4 steps at 120 BPM. A longer setting stops at that length. A change of time glides, so it bends pitch and does not click. Delay width sets the ping-pong: at 127 the repeats alternate left and right, starting left, and at 0 they sound in both channels. The send into the delay is mono, so a wide sound keeps its width in the dry signal only. The reverb is stereo.
 
 ## Master
 
@@ -344,11 +353,12 @@ python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
 - Randomize an entire track: its triggers, or one chosen parameter.
 - Track mutes: POLY latches a mute mode where the OP keys toggle tracks, with dimmed rows and OP LEDs.
 - One level of undo, with clear and randomize.
-- Perform layer on ARP: density, chance offset, mutate and fill as offsets that do not change the pattern. PIT fill, GLO reset, MONO mutate.
+- Perform layer on ARP: density, chance offset, mutate and fill as offsets that do not change the pattern. PIT fill, GLO reset, MONO mutate. It comes after undo, so mutate has a way back.
 - MIDI clock.
 - Per-step parameter lane and range select.
 - Clear and randomize during overdub, including a way to unset locks and free their memory.
-- Chord modes.
+- Shared lock memory: one pool of 1620 locks per pattern that any track can use, in place of 270 per track. It costs no memory. Do this when a track first runs out, or before chords.
+- Chord modes and chord recording. A step keeps one note in its own field, and each added note is a lock on that step.
 - Quantization: pitch to a scale, and recorded notes to steps.
 - Arpeggiator.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
@@ -358,8 +368,4 @@ python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
 
 ## Open
 
-- Steps per track and locks per track. The first estimate is 8 KB a pattern: 64 steps and about 270 locks per track.
-- Whether a step holds several notes, for recording and chords. Decide this before saving to flash.
-
 - Bug to find: with a NORM snare firing on every step, a kick at HIGH did not fire every time. A trigger of higher priority should take a lower one on any track, and a test of that rule on the voice pool passes.
-- How much lock storage a track gets. A track with every step locked must fit.

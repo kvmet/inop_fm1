@@ -32,8 +32,8 @@ static const page_t PAGES[] = {
     {"SLOT", {ID_SLOT, PV_SLOT_SRC0, PV_SLOT_DST0, PV_SLOT_AMT0, ID_NONE, ID_NONE}, {"SLOT", "SRC", "DST", "AMT", "", ""}},
     {"ENG1", {PV_ENGINE, PV_E1, PV_E2, PV_E3, PV_E4, PV_E0}, {"ENGINE", "E1", "E2", "E3", "E4", "E0"}},
     {"ENG2", {ID_NONE, PV_E5, PV_E6, PV_E7, ID_NONE, ID_NONE}, {"", "E5", "E6", "E7", "", ""}},
-    {"GLOB", {ID_BPM, ID_GLOBAL(G_DELAY_TIME), ID_GLOBAL(G_DELAY_FB), ID_GLOBAL(G_REVERB_SIZE), ID_GLOBAL(G_REVERB_DAMP), ID_NONE}, {"BPM", "DLY T", "DLY FB", "SIZE", "DAMP", ""}},
-    {"SEND", {ID_NONE, PV_SEND_DELAY, PV_SEND_REVERB, PV_SEND_FOLLOW, ID_NONE, ID_NONE}, {"", "DELAY", "REVERB", "FOLLOW", "", ""}},
+    {"GLOB", {ID_BPM, ID_GLOBAL(G_DELAY_TIME), ID_GLOBAL(G_DELAY_FB), ID_GLOBAL(G_REVERB_SIZE), ID_GLOBAL(G_REVERB_DAMP), ID_GLOBAL(G_DELAY_WIDTH)}, {"BPM", "DLY T", "DLY FB", "SIZE", "DAMP", "DLY W"}},
+    {"SEND", {ID_NONE, PV_SEND_DELAY, PV_SEND_REVERB, PV_SEND_FOLLOW, PV_STEREO, ID_NONE}, {"", "DELAY", "REVERB", "FOLLOW", "STEREO", ""}},
     {"FOL", {ID_NONE, ID_GLOBAL(G_FOL_ATTACK), ID_GLOBAL(G_FOL_RELEASE), ID_NONE, ID_NONE, ID_NONE}, {"", "ATK", "REL", "", "", ""}},
     {"STEP", {ID_NONE, ID_CHANCE, ID_HITS, ID_TIME, ID_NONE, ID_NONE}, {"", "CHANCE", "RATCH", "TIME", "", ""}},
     {"MAST", {ID_GLOBAL(G_MST_WIDTH), ID_GLOBAL(G_MST_COMP), ID_GLOBAL(G_MST_ATTACK), ID_GLOBAL(G_MST_RELEASE), ID_GLOBAL(G_MST_TILT), ID_GLOBAL(G_MST_DRIVE)}, {"WIDTH", "COMP", "ATK", "REL", "TILT", "DRIVE"}},
@@ -1359,7 +1359,7 @@ static void free_fm_wave(const pkt_t *p)
         y[i] = 0;
     fm_start(&f, &q);
     for (i = 0; i < BLOCKS; i++)
-        fm_render(&f, &q, &y[i * (int32_t)CTL], 0, 32767, 0);
+        fm_render(&f, &q, &y[i * (int32_t)CTL], 0, 0, 32767, 0);
     for (i = 0; i < W; i++) {
         int32_t cy = TOP + H / 2 - clamp(y[SETTLE + i], -FM_PEAK, FM_PEAK) * (H / 2) / FM_PEAK;
         if (i)
@@ -1842,6 +1842,7 @@ static void ui_init(void)
             track_init(&patterns[i].track[k], k);
     globals[G_DELAY_TIME] = 3;
     globals[G_DELAY_FB] = 50;
+    globals[G_DELAY_WIDTH] = 127;
     globals[G_REVERB_SIZE] = 80;
     globals[G_REVERB_DAMP] = 40;
     globals[G_MST_ATTACK] = 40;

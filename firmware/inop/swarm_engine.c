@@ -16,14 +16,18 @@ static const uint16_t SWARM_OCTAVE_Q8[SWARM_MODES][SWARM_OSCS] = {
     {128, 128, 256, 256, 256, 512, 512},
 };
 
+/* a wide voice's sides. Each side has one oscillator from each octave, and flats that near cancel its sharps, so neither side leans in range or pitch. The center and sub stay in both */
+enum { SWARM_LEFT, SWARM_RIGHT, SWARM_CHANNELS, SWARM_BOTH = SWARM_CHANNELS };
+static const uint8_t SWARM_SIDE[SWARM_OSCS] = {SWARM_LEFT, SWARM_RIGHT, SWARM_RIGHT, SWARM_BOTH, SWARM_LEFT, SWARM_RIGHT, SWARM_LEFT};
+
 typedef struct {
     uint32_t phase[SWARM_OSCS], master[SWARM_OSCS], sub_phase;
     uint32_t offset[SWARM_OSCS];     /* the second saw's phase over the first's */
     int32_t drift[SWARM_OSCS], drift_to[SWARM_OSCS];   /* Q24 of the frequency */
     int32_t level[SWARM_OSCS], sub_level;              /* Q15 */
     int32_t morph;                   /* Q15: where the last block's ramp ended */
-    int32_t carry;                   /* Q8: the smoothing of an edge at the last block's end, for this block's first sample */
-    int32_t shape_gain, dc;
+    int32_t carry[SWARM_CHANNELS];   /* Q8: the smoothing of an edge at the last block's end, for this block's first sample */
+    int32_t shape_gain, dc[SWARM_CHANNELS];
     uint32_t rng, clock;
 } swarm_voice_t;
 
@@ -74,14 +78,31 @@ static AUDIO_INLINE int32_t swarm_past_edge(uint32_t ph, uint32_t inc)
     return t > 32768u ? 32768 : (int32_t)t;
 }
 
+/* where an oscillator's edges go. A wide voice's oscillator is panned as it writes them, so spread costs one more running sum and no mix per sample */
+typedef struct {
+    int32_t *d, *carry, *far_d, *far_carry;      /* far_d: the other channel, or 0 */
+    int32_t near_q12, far_q12;
+} swarm_target_t;
+
+static AUDIO_INLINE void swarm_put(const swarm_target_t *t, uint32_t e, int32_t jump, int32_t past)
+{
+    if (!t->far_d) {
+        swarm_edge(t->d, t->carry, e, jump, past);
+        return;
+    }
+    swarm_edge(t->d, t->carry, e, (int32_t)(((int64_t)jump * t->near_q12) >> 12), past);
+    if (t->far_q12)
+        swarm_edge(t->far_d, t->far_carry, e, (int32_t)(((int64_t)jump * t->far_q12) >> 12), past);
+}
+
 /* the wraps of a saw at ph on sample from, up to and including one onto sample to */
-static AUDIO_INLINE void swarm_wraps(int32_t *d, int32_t *carry, uint32_t ph, uint32_t inc, uint32_t from, uint32_t to, int32_t jump)
+static AUDIO_INLINE void swarm_wraps(const swarm_target_t *t, uint32_t ph, uint32_t inc, uint32_t from, uint32_t to, int32_t jump)
 {
     uint32_t left = 0u - ph - 1u;
     while ((uint64_t)inc * (to - from) > left) {
         uint32_t k = left / inc;
         ph += (k + 1u) * inc;
-        swarm_edge(d, carry, from + k, jump, swarm_past_edge(ph, inc));
+        swarm_put(t, from + k, jump, swarm_past_edge(ph, inc));
         from += k + 1u;
         left = 0u - ph - 1u;
     }
@@ -107,9 +128,9 @@ static void swarm_start(swarm_voice_t *S, const pkt_t *p, uint32_t seed)
     }
     S->sub_phase = 0;
     S->sub_level = sub * 258;
-    S->carry = 0;
+    for (i = 0; i < SWARM_CHANNELS; i++)
+        S->carry[i] = S->dc[i] = 0;
     S->shape_gain = swarm_shape_gain(p->v[PV_E2]);
-    S->dc = 0;
     S->rng = r;
     S->clock = 0;
 }
@@ -143,24 +164,29 @@ static uint32_t swarm_edges_q8(const pkt_t *p)
     return sum;
 }
 
-/* adds one block to out. pitch: an offset in 1/16 semitones. timbre: an offset to SHAPE */
-static AUDIO_INLINE void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t *out, int32_t pitch, int32_t timbre)
+/* adds one block to out, or also to right, with each oscillator panned. pitch: an offset in 1/16 semitones. timbre: an offset to SHAPE */
+static AUDIO_INLINE void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t *out, int32_t *right, int32_t pitch, int32_t timbre)
 {
-    int32_t d[CTL + 2u], sub[CTL];
+    int32_t d[SWARM_CHANNELS][CTL + 2u], sub[CTL];
     int32_t shape = clamp(p->v[PV_E2] + timbre, 0, 127), spread = clamp(p->v[PV_E1], 0, 127), shift = clamp(p->v[PV_E3], 0, 127);
     int32_t amount = spread * spread * 32767 / 16129, drift = clamp(p->v[PV_E6], 0, 127), morph_to, d_morph;
-    int32_t gain_to = swarm_shape_gain(shape), ramp, line = 0, slope = 0, morph = S->morph;
-    uint32_t base = note_inc(p->v[PV_NOTE] * 16 + pitch), width, mode = swarm_mode(p->v[PV_E0]), i, s;
+    int32_t gain_to = swarm_shape_gain(shape), line[SWARM_CHANNELS] = {0, 0}, slope[SWARM_CHANNELS] = {0, 0}, morph = S->morph, near = 0, far = 0;
+    uint32_t base = note_inc(p->v[PV_NOTE] * 16 + pitch), width, mode = swarm_mode(p->v[PV_E0]), i, s, channels = right ? SWARM_CHANNELS : 1u, c;
+    if (right)
+        stereo_gains(p->v[PV_STEREO], &near, &far);
     swarm_shape(shape, &morph_to, &width);
     d_morph = (morph_to - morph) / CTL;
     swarm_drift(S, drift * drift);       /* 127 moves each oscillator by up to 1.5 % */
-    for (s = 0; s < CTL; s++)
-        d[s] = 0;
-    d[CTL] = d[CTL + 1u] = 0;
-    d[0] = S->carry;
-    d[1] = -S->carry;
-    S->carry = 0;
+    for (c = 0; c < channels; c++) {
+        for (s = 0; s < CTL + 2u; s++)
+            d[c][s] = 0;
+        d[c][0] = S->carry[c];
+        d[c][1] = -S->carry[c];
+        S->carry[c] = 0;
+    }
     for (i = 0; i < SWARM_OSCS; i++) {
+        swarm_target_t target;
+        int32_t line_i, slope_i;
         int64_t ratio = 65536 + ((SWARM_DETUNE[i] * amount) >> 15) + (S->drift[i] >> 8);
         uint64_t inc64 = (((uint64_t)base * SWARM_OCTAVE_Q8[mode][i]) >> 8) * (uint64_t)ratio >> 16;
         uint64_t sync64 = (inc64 * (uint32_t)(256 + shift * 6)) >> 8;   /* 127 is nearly 4 times the oscillator's pitch */
@@ -172,17 +198,32 @@ static AUDIO_INLINE void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t 
         moved = (int32_t)((width + (uint32_t)(S->drift[i] >> 8) * (1u << 16)) - S->offset[i]) / (int32_t)CTL;
         inc_b = inc + (uint32_t)moved;
         b = a + S->offset[i];
-        line += (int32_t)(((int64_t)swarm_line(a, b, morph) * level) >> 16);
-        slope += (int32_t)((((((int64_t)inc - (((int64_t)inc_b * morph) >> 15)) >> 8) - ((d_morph * ((int32_t)(b >> 16) - 32768)) >> 7)) * level) >> 16);
+        line_i = (int32_t)(((int64_t)swarm_line(a, b, morph) * level) >> 16);
+        slope_i = (int32_t)((((((int64_t)inc - (((int64_t)inc_b * morph) >> 15)) >> 8) - ((d_morph * ((int32_t)(b >> 16) - 32768)) >> 7)) * level) >> 16);
+        if (right) {
+            uint32_t side = SWARM_SIDE[i], first = side == SWARM_RIGHT ? SWARM_RIGHT : SWARM_LEFT, other = first ^ 1u;
+            int32_t near_i = side == SWARM_BOTH ? STEREO_UNITY_Q12 : near, far_i = side == SWARM_BOTH ? STEREO_UNITY_Q12 : far;
+            target = (swarm_target_t){d[first], &S->carry[first], d[other], &S->carry[other], near_i, far_i};
+            line[first] += (int32_t)(((int64_t)line_i * near_i) >> 12);
+            slope[first] += (int32_t)(((int64_t)slope_i * near_i) >> 12);
+            line[other] += (int32_t)(((int64_t)line_i * far_i) >> 12);
+            slope[other] += (int32_t)(((int64_t)slope_i * far_i) >> 12);
+        } else {
+            target.d = d[0];
+            target.carry = &S->carry[0];
+            target.far_d = 0;
+            line[0] += line_i;
+            slope[0] += slope_i;
+        }
         jump_b = ((morph + d_morph * (int32_t)(CTL / 2u)) * level) >> 7;
         for (s = 0; s < CTL;) {
             uint32_t to = CTL, left = 0u - m - 1u, steps;
             int hit = shift && (uint64_t)inc_m * (CTL - s) > left;
             if (hit)
                 to = s + left / inc_m + 1u;
-            swarm_wraps(d, &S->carry, a, inc, s, to, -256 * level);
+            swarm_wraps(&target, a, inc, s, to, -256 * level);
             if (second)
-                swarm_wraps(d, &S->carry, b, inc_b, s, to, jump_b);
+                swarm_wraps(&target, b, inc_b, s, to, jump_b);
             steps = to - s;
             a += inc * steps;
             b += inc_b * steps;
@@ -192,7 +233,7 @@ static AUDIO_INLINE void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t 
                 uint32_t restart = (m / ((inc_m >> 16) | 1u)) * (inc >> 16), offset = b - a;
                 int32_t at = morph + d_morph * (int32_t)to;
                 int32_t jump = (int32_t)(((int64_t)(swarm_line(restart, restart + offset, at) - swarm_line(a, b, at)) * level) >> 16);
-                swarm_edge(d, &S->carry, to - 1u, jump, swarm_past_edge(m, inc_m));
+                swarm_put(&target, to - 1u, jump, swarm_past_edge(m, inc_m));
                 a = restart;
                 b = restart + offset;
             }
@@ -213,15 +254,19 @@ static AUDIO_INLINE void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t 
             sub[s] = 0;
     }
     S->morph = morph_to;
-    ramp = S->shape_gain * (1 << CTL_BITS);
-    for (s = 0; s < CTL; s++) {
-        int32_t y;
-        line += d[s];
-        y = (line >> 8) * 256 - S->dc;
-        line += slope;
-        S->dc += y >> 10;                                /* a one-pole high-pass, ~7 Hz: a sync restart moves the mean */
-        ramp += gain_to - S->shape_gain;
-        out[s] += ((((y >> 8) * (ramp >> (CTL_BITS + 2))) >> 12) + sub[s] * 2) * SWARM_PEAK >> 15;   /* the sub comes after SHAPE's gain */
+    for (c = 0; c < channels; c++) {
+        int32_t *to = c == SWARM_LEFT ? out : right;
+        int32_t sum = line[c], dc = S->dc[c], ramp = S->shape_gain * (1 << CTL_BITS);
+        for (s = 0; s < CTL; s++) {
+            int32_t y;
+            sum += d[c][s];
+            y = (sum >> 8) * 256 - dc;
+            sum += slope[c];
+            dc += y >> 10;                               /* a one-pole high-pass, ~7 Hz: a sync restart moves the mean */
+            ramp += gain_to - S->shape_gain;
+            to[s] += ((((y >> 8) * (ramp >> (CTL_BITS + 2))) >> 12) + sub[s] * 2) * SWARM_PEAK >> 15;   /* the sub comes after SHAPE's gain */
+        }
+        S->dc[c] = dc;
     }
     S->shape_gain = gain_to;
 }
