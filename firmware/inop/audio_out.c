@@ -13,7 +13,7 @@ static volatile uint32_t master_q12 = 2048u;
 static sound_t sounds[NSOUND] __attribute__((section(".pool")));
 static pattern_t patterns[NPATTERN] __attribute__((section(".pool")));
 static seq_t seq;
-static master_t master = {MASTER_LIMIT};
+static master_t master = MASTER_INIT;
 static volatile int8_t globals[G_COUNT];
 static volatile uint8_t keys_play;       /* 1: the keys play notes on keys_track */
 static volatile uint8_t keys_track;
@@ -59,6 +59,7 @@ static inline int32_t abs_max(int32_t peak, int32_t x)
 static void audio_block(int32_t *out)
 {
     int32_t l[CTL], r[CTL], delay_bus[CTL], reverb_bus[CTL], peak[METERS] = {0, 0, 0, 0};
+    master_params_t mp = {globals[G_MST_COMP], globals[G_MST_ATTACK], globals[G_MST_RELEASE], globals[G_MST_TILT], globals[G_MST_WIDTH], globals[G_MST_DRIVE], (int32_t)master_q12};
     uint32_t i;
     for (i = 0; i < CTL; i++)
         l[i] = r[i] = delay_bus[i] = reverb_bus[i] = 0;
@@ -68,11 +69,7 @@ static void audio_block(int32_t *out)
     voices_render(l, r, delay_bus, reverb_bus);
     AUDIO_FAR(delay_block)(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);
     AUDIO_FAR(reverb_block)(&reverb_fx, reverb_bus, l, r, globals[G_REVERB_SIZE], globals[G_REVERB_DAMP]);
-    for (i = 0; i < CTL; i++) {
-        l[i] = ((l[i] >> 2) * (int32_t)master_q12) >> 10;
-        r[i] = ((r[i] >> 2) * (int32_t)master_q12) >> 10;
-    }
-    AUDIO_FAR(master_block)(&master, l, r);
+    AUDIO_FAR(master_block)(&master, l, r, &mp);
     for (i = 0; i < CTL; i++) {
         out[2u * i] = l[i] * (1 << OUT_SHIFT);
         out[2u * i + 1u] = r[i] * (1 << OUT_SHIFT);

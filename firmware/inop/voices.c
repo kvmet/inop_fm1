@@ -346,7 +346,8 @@ static void voices_measure(void)
     v->active = 0;
     for (b = 0; b < WARM_BLOCKS + MEASURE_BLOCKS; b++) {
         uint32_t t0, t1, t2, t3;
-        master_t m = {MASTER_LIMIT};
+        master_t m = MASTER_INIT;
+        const master_params_t worst = MASTER_WORST;
         for (i = 0; i < CTL; i++)
             l[i] = r[i] = d[i] = w[i] = 10000;
         t0 = fm1_ticks();
@@ -354,7 +355,7 @@ static void voices_measure(void)
         t1 = fm1_ticks();
         AUDIO_FAR(reverb_block)(&reverb_fx, w, l, r, 64, 64);
         t2 = fm1_ticks();
-        AUDIO_FAR(master_block)(&m, l, r);
+        AUDIO_FAR(master_block)(&m, l, r, &worst);
         t3 = fm1_ticks();
         if (b >= WARM_BLOCKS) {
             cost_delay = t1 - t0 > cost_delay ? t1 - t0 : cost_delay;

@@ -34,7 +34,7 @@ static const page_t PAGES[] = {
     {"ENG2", {ID_NONE, PV_E5, PV_E6, PV_E7, ID_NONE, ID_NONE}, {"", "E5", "E6", "E7", "", ""}},
     {"GLOB", {ID_BPM, ID_GLOBAL(G_DELAY_TIME), ID_GLOBAL(G_DELAY_FB), ID_GLOBAL(G_REVERB_SIZE), ID_GLOBAL(G_REVERB_DAMP), ID_NONE}, {"BPM", "DLY T", "DLY FB", "SIZE", "DAMP", ""}},
     {"STEP", {ID_NONE, ID_CHANCE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "CHANCE", "", "", "", ""}},
-    {"MAST", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
+    {"MAST", {ID_GLOBAL(G_MST_WIDTH), ID_GLOBAL(G_MST_COMP), ID_GLOBAL(G_MST_ATTACK), ID_GLOBAL(G_MST_RELEASE), ID_GLOBAL(G_MST_TILT), ID_GLOBAL(G_MST_DRIVE)}, {"WIDTH", "COMP", "ATK", "REL", "TILT", "DRIVE"}},
     {"SYS", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"ARP", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"SAVE", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
@@ -229,6 +229,10 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, 0, STEP_CHANCE_ALWAYS);
     if (id == ID_GLOBAL(G_DELAY_TIME))
         return clamp(v, 1, 16);                  /* in steps */
+    if (id == ID_GLOBAL(G_MST_TILT))
+        return clamp(v, -MASTER_TILT_MAX, MASTER_TILT_MAX);
+    if (id == ID_GLOBAL(G_MST_DRIVE))
+        return clamp(v, -MASTER_DRIVE_MAX, MASTER_DRIVE_MAX);
     if (id == PV_VEL)
         return clamp(v, 1, 127);
     if (id == PV_LEN)
@@ -1298,6 +1302,57 @@ static void draw_meters(void)
     }
 }
 
+/* what the compressor does to a steady level: 36 dB of input across and up, the top right corner at the limit. The diagonal is no change */
+static void free_master_curve(int32_t comp)
+{
+    enum { X = 4, Y = 3, SIZE = 62, SPAN_Q8 = 1536 };
+    int32_t i, py = 0;
+    for (i = 0; i < SIZE; i++) {
+        int32_t level = MASTER_LIMIT_LOG_Q8 - SPAN_Q8 + i * SPAN_Q8 / (SIZE - 1);
+        int32_t out = level + comp_makeup_q8(comp) - comp_reduction_q8(level, comp);
+        int32_t cy = Y + clamp((MASTER_LIMIT_LOG_Q8 - out) * (SIZE - 1) / SPAN_Q8, 0, SIZE - 1);
+        cv_rect(X + i, Y + SIZE - 1 - i, 1, 1, T_MID);
+        if (i)
+            cv_line(X + i - 1, py, X + i, cy, T_THEME);
+        py = cy;
+    }
+}
+
+/* full bars are 12 dB of gain reduction */
+#define MASTER_BAR_X (FREE_X + 96u)
+#define MASTER_BAR_W 88u
+#define MASTER_BAR_ROW_Y(i) (FREE_Y + 12u + (i) * 24u)
+#define MASTER_BAR_H 14u
+#define MASTER_BAR_FULL_Q8 512
+enum { MASTER_BAR_COMP, MASTER_BAR_LIMIT, MASTER_BARS };
+static uint8_t master_bar_drawn[MASTER_BARS];
+
+static void free_master(int32_t comp)
+{
+    static const char *const LABELS[MASTER_BARS] = {"COMP", "LIMIT"};
+    uint32_t i;
+    free_master_curve(comp);
+    for (i = 0; i < MASTER_BARS; i++) {
+        cv_text(70, (int32_t)(MASTER_BAR_ROW_Y(i) - FREE_Y) - 1, &AF_S, LABELS[i], T_MID);
+        master_bar_drawn[i] = 0;
+    }
+}
+
+/* sends only the part of each bar that moved */
+static void draw_master_bars(void)
+{
+    const int32_t reduction[MASTER_BARS] = {master.reduction_q16 >> 8, master_limit_reduction_q8(&master)};
+    uint32_t i;
+    for (i = 0; i < MASTER_BARS; i++) {
+        uint32_t bar = (uint32_t)clamp(reduction[i], 0, MASTER_BAR_FULL_Q8) * MASTER_BAR_W / MASTER_BAR_FULL_Q8, old = master_bar_drawn[i];
+        if (bar > old)
+            lcd_fill(MASTER_BAR_X + old, MASTER_BAR_ROW_Y(i), bar - old, MASTER_BAR_H, T_ACCENT);
+        else if (bar < old)
+            lcd_fill(MASTER_BAR_X + bar, MASTER_BAR_ROW_Y(i), old - bar, MASTER_BAR_H, T_BG);
+        master_bar_drawn[i] = (uint8_t)bar;
+    }
+}
+
 static uint32_t hash_mix(uint32_t h, uint32_t v) { return (h ^ v) * 16777619u; }
 
 /* one segment per page of the group, along the free space's lower edge. The shown page's is solid and the others are a line */
@@ -1340,6 +1395,8 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
         key = hash_mix(key, ui.slot);
         for (i = 0; i < PV_COUNT; i++)
             key = hash_mix(key, (uint8_t)p.v[i]);
+    } else if (pg == &PAGES[PG_MASTER]) {
+        key = hash_mix(key, (uint8_t)globals[G_MST_COMP]);
     } else if (pg == &PAGES[PG_STEP]) {
         key = hash_mix(key, held_first != 0);
     } else if (pg == &PAGES[PG_SYSTEM]) {
@@ -1381,7 +1438,9 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             cv_text(4, 24, &AF_M, "HOLD A STEP", T_MID);
         else if (pg == &PAGES[PG_SAVE])
             cv_text(4, 24, &AF_S, "NOT BUILT: POWER OFF LOSES ALL", T_ACCENT);
-        else if (pg == &PAGES[PG_MASTER] || pg == &PAGES[PG_ARP])
+        else if (pg == &PAGES[PG_MASTER])
+            free_master(globals[G_MST_COMP]);
+        else if (pg == &PAGES[PG_ARP])
             cv_text(4, 24, &AF_S, "NOT BUILT", T_MID);
         if (ui.sound_copy == SOUND_COPY_NONE)
             free_page_tabs(pg);
@@ -1392,6 +1451,8 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
     }
     if (pg == &PAGES[PG_HOME] && ui.sound_copy == SOUND_COPY_NONE)
         draw_meters();
+    if (pg == &PAGES[PG_MASTER] && ui.sound_copy == SOUND_COPY_NONE)
+        draw_master_bars();
 }
 
 /* inverts in time with the flashing track key */
@@ -1602,6 +1663,9 @@ static void ui_init(void)
     globals[G_DELAY_FB] = 50;
     globals[G_REVERB_SIZE] = 80;
     globals[G_REVERB_DAMP] = 40;
+    globals[G_MST_ATTACK] = 40;
+    globals[G_MST_RELEASE] = 50;
+    globals[G_MST_WIDTH] = MASTER_WIDTH_UNITY;
     sound_perc(&sounds[0], PERC_SKIN, 36, 82, 0, 0, 0, 10, 50, 0, 127);       /* kick */
     sound_perc(&sounds[1], PERC_SKIN, 50, 70, 0, 64, 70, 20, 15, 70, 127);     /* snare */
     sound_perc(&sounds[2], PERC_METAL, 72, 50, 60, 64, 110, 40, 0, 60, 127);   /* hat */

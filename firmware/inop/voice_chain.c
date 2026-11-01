@@ -1,13 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* What each voice does after its engine: effects, filter, amp envelope, level and pan. All values come from the packet.
- * Also the master limiter. No hardware here: tests/inop_test.c runs this on the host. */
+ * No hardware here: tests/inop_test.c runs this on the host. */
 #define ENV_FULL (1 << 24)
 #define ENV_END (1 << 14)        /* -60 dB: the last block fades from here to 0 */
 #define CTL_BITS 5
 _Static_assert((1 << CTL_BITS) == CTL, "the amp ramp divides by a shift");
 #define SHAPE_FULL 8192          /* an engine's full scale; SHAPE folds relative to this */
-#define MASTER_LIMIT 12000
-#define MASTER_CEILING 14000     /* the limiter's attack lets a few samples past MASTER_LIMIT */
 
 enum { FLT_OFF, FLT_LP, FLT_BP, FLT_HP, FLT_TYPES };
 enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
@@ -431,44 +429,4 @@ static AUDIO_INLINE int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int
     c->gain_l = target_l;
     c->gain_r = target_r;
     return c->amp_env.stage != ENV_DONE;
-}
-
-/* the master: limiter, then soft clip, then the ceiling */
-typedef struct { int32_t env; } master_t;
-
-static AUDIO_INLINE void master_sample(master_t *m, int32_t *l, int32_t *r)
-{
-    int32_t al = *l < 0 ? -*l : *l, ar = *r < 0 ? -*r : *r, a = al > ar ? al : ar;
-    if (a > m->env)
-        m->env += (a - m->env) >> 2;
-    else if (m->env > MASTER_LIMIT)
-        m->env -= ((m->env - MASTER_LIMIT) >> 12) + 1;
-    if (m->env > MASTER_LIMIT) {
-        int32_t g = (int32_t)(((uint32_t)MASTER_LIMIT << 15) / (uint32_t)m->env);
-        *l = ((*l >> 4) * g) >> 11;
-        *r = ((*r >> 4) * g) >> 11;
-    }
-    *l = clamp(softclip(*l), -MASTER_CEILING, MASTER_CEILING);
-    *r = clamp(softclip(*r), -MASTER_CEILING, MASTER_CEILING);
-}
-
-AUDIO_RAM static void master_block(master_t *m, int32_t *l, int32_t *r)
-{
-    uint32_t i;
-    for (i = 0; i < CTL; i++)
-        master_sample(m, &l[i], &r[i]);
-}
-
-/* a peak as a bar of 0..w px: 6 dB per w/8 px, full at MASTER_CEILING */
-#define METER_OCTAVES 8
-static uint32_t meter_bar(int32_t peak, uint32_t w)
-{
-    static const int32_t FULL_Q3 = 109;          /* log2(MASTER_CEILING) in 1/8 octaves */
-    uint32_t v = (uint32_t)peak;
-    int32_t e = 0;
-    if (peak < 8)
-        return 0;
-    while (v >> (e + 1))
-        e++;
-    return (uint32_t)clamp(e * 8 + (int32_t)((v >> (e - 3)) & 7u) - FULL_Q3 + METER_OCTAVES * 8, 0, METER_OCTAVES * 8) * w / (METER_OCTAVES * 8);
 }

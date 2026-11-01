@@ -10,6 +10,7 @@
 #include "seq.c"
 #include "overdub.c"
 #include "voice_chain.c"
+#include "master.c"
 #include "fm_engine.c"
 #include "perc_engine.c"
 #include "swarm_engine.c"
@@ -155,6 +156,217 @@ static void stop_emit(uint32_t track, uint32_t step, const track_pat_t *t)
     (void)t;
     stop_emits++;
     stop_last_step = step;
+}
+
+/* blocks of a square wave, so a block's peak is the amplitude. Returns the last block's largest output */
+static int32_t master_run(master_t *m, const master_params_t *p, int32_t amp, uint32_t blocks)
+{
+    int32_t l[CTL], r[CTL], peak = 0;
+    uint32_t b, i;
+    for (b = 0; b < blocks; b++) {
+        peak = 0;
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = i & 1u ? amp : -amp;
+        master_block(m, l, r, p);
+        for (i = 0; i < CTL; i++)
+            peak = abs(l[i]) > peak ? abs(l[i]) : peak;
+    }
+    return peak;
+}
+
+static void test_master_log_exp(void)
+{
+    int32_t v;
+    CHECK(abs(log2_q8(MASTER_LIMIT) - MASTER_LIMIT_LOG_Q8) <= 1);
+    CHECK(log2_q8(1) == 0 && log2_q8(256) == 2048 && log2_q8(65536) == 4096);
+    for (v = -3000; v <= 1000; v += 37) {
+        double want = 4096.0 * pow(2.0, v / 256.0);
+        CHECK(fabs(exp2_q12(v) - want) <= want * 0.004 + 2.0);
+    }
+    for (v = 1; v < 100000; v = v * 5 / 4 + 1)
+        CHECK(fabs(log2_q8((uint32_t)v) - 256.0 * log2(v)) <= 4.0);
+}
+
+/* every stage at its neutral value is the limiter and soft clip alone, sample for sample */
+static void test_master_neutral(void)
+{
+    const master_params_t p = MASTER_NEUTRAL;
+    master_t a = MASTER_INIT, b = MASTER_INIT;
+    uint32_t n, i, seed = 12345u;
+    for (n = 0; n < 200u; n++) {
+        int32_t l[CTL], r[CTL], x[CTL], y[CTL];
+        for (i = 0; i < CTL; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            l[i] = x[i] = (int32_t)(seed >> 16) - 32768;
+            r[i] = y[i] = (int32_t)(seed & 0xFFFFu) - 32768;
+        }
+        master_block(&a, l, r, &p);
+        for (i = 0; i < CTL; i++) {
+            master_sample(&b, &x[i], &y[i]);
+            CHECK(l[i] == x[i] && r[i] == y[i]);
+        }
+    }
+    CHECK(a.reduction_q16 == 0 && a.gain_q12 == MASTER_GAIN_UNITY_Q12);
+}
+
+static void test_master_compressor_static(void)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    int32_t comp, slope;
+    p.attack = 0;
+    p.release = 0;
+    for (comp = 32; comp <= 127; comp += 95) {
+        master_t m = MASTER_INIT;
+        int32_t threshold = comp_threshold_q8(comp), reduction, want;
+        p.comp = comp;
+        slope = comp_slope_q8(comp);
+        master_run(&m, &p, exp2_q12(threshold + 256 - 12 * 256) , 1000);   /* 1 octave over */
+        reduction = m.reduction_q16 >> 8;
+        CHECK(abs(reduction - slope) <= 8);
+        want = exp2_q12(comp_makeup_q8(comp) - reduction);
+        CHECK(abs(m.gain_q12 - want) <= want / 50);
+        master_run(&m, &p, exp2_q12(threshold - 256 - 12 * 256), 3000);    /* 1 octave under */
+        CHECK(m.reduction_q16 >> 8 <= 2);
+    }
+    CHECK(comp_makeup_q8(0) == 0 && comp_makeup_q8(127) == 480);   /* half of 30 dB at 4:1: 11 dB */
+    CHECK(comp_reduction_q8(3000, 127) > comp_reduction_q8(3000, 64));
+    CHECK(comp_threshold_q8(127) == MASTER_LIMIT_LOG_Q8 - 5 * 256);
+    CHECK(comp_slope_q8(127) == 192);                   /* 4:1 removes 3/4 */
+}
+
+static void test_master_compressor_times(void)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    master_t m = MASTER_INIT;
+    int32_t amp = exp2_q12(comp_threshold_q8(127) + 512 - 12 * 256), full;
+    uint32_t blocks;
+    p.comp = 127;
+    p.attack = 64;                                      /* 4 octaves: 16 blocks */
+    p.release = 64;                                     /* 3 octaves: 320 blocks */
+    master_run(&m, &p, amp, 2000);
+    full = m.reduction_q16;
+    CHECK(full > 0);
+    m = (master_t)MASTER_INIT;
+    for (blocks = 0; m.reduction_q16 < full * 63 / 100 && blocks < 1000u; blocks++)
+        master_run(&m, &p, amp, 1);
+    CHECK(blocks >= 10u && blocks <= 24u);
+    master_run(&m, &p, amp, 2000);
+    for (blocks = 0; m.reduction_q16 > full * 37 / 100 && blocks < 5000u; blocks++)
+        master_run(&m, &p, 1, 1);
+    CHECK(blocks >= 200u && blocks <= 450u);
+}
+
+/* COMP back at 0 returns to unity and then costs nothing */
+static void test_master_compressor_off(void)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    master_t m = MASTER_INIT;
+    p.comp = 127;
+    master_run(&m, &p, 8000, 200);
+    CHECK(m.gain_q12 != MASTER_GAIN_UNITY_Q12);
+    p.comp = 0;
+    master_run(&m, &p, 8000, 20000);
+    CHECK(m.gain_q12 == MASTER_GAIN_UNITY_Q12 && m.reduction_q16 == 0);
+}
+
+static int32_t master_sine_peak(int32_t tilt, double hz)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    master_t m = MASTER_INIT;
+    int32_t peak = 0;
+    uint32_t n, i;
+    p.tilt = tilt;
+    for (n = 0; n < 200u; n++) {
+        int32_t l[CTL], r[CTL];
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = (int32_t)(500.0 * sin(2.0 * M_PI * hz * (n * CTL + i) / FS));
+        master_block(&m, l, r, &p);
+        for (i = 0; n > 100u && i < CTL; i++)
+            peak = abs(l[i]) > peak ? abs(l[i]) : peak;
+    }
+    return peak;
+}
+
+static void test_master_tilt(void)
+{
+    int32_t low = master_sine_peak(0, 100.0), high = master_sine_peak(0, 5000.0);
+    CHECK(master_sine_peak(MASTER_TILT_MAX, 100.0) > low * 3 / 2);
+    CHECK(master_sine_peak(MASTER_TILT_MAX, 5000.0) < high * 3 / 4);
+    CHECK(master_sine_peak(-MASTER_TILT_MAX, 100.0) < low * 3 / 4);
+    CHECK(master_sine_peak(-MASTER_TILT_MAX, 5000.0) > high * 3 / 2);
+}
+
+static void test_master_width(void)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    master_t m = MASTER_INIT;
+    int32_t l[CTL], r[CTL];
+    uint32_t i;
+    p.width = 0;
+    for (i = 0; i < CTL; i++) {
+        l[i] = 1000;
+        r[i] = -600;
+    }
+    master_block(&m, l, r, &p);
+    for (i = 0; i < CTL; i++)
+        CHECK(l[i] == r[i]);                            /* width 0 is mono */
+    m = (master_t)MASTER_INIT;
+    p.width = 127;
+    for (i = 0; i < CTL; i++) {
+        l[i] = 1000;
+        r[i] = -600;
+    }
+    master_block(&m, l, r, &p);
+    CHECK(l[0] - r[0] > 2800);                          /* the side about doubles */
+}
+
+static void test_master_drive(void)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    master_t a = MASTER_INIT, b = MASTER_INIT;
+    int32_t flat = master_run(&a, &p, 400, 10);
+    p.drive = 12;                                       /* 6 dB */
+    CHECK(abs(master_run(&b, &p, 400, 10) - flat * 2) <= flat / 20);
+    p.drive = -12;
+    CHECK(abs(master_run(&b, &p, 400, 10) - flat / 2) <= flat / 20);
+}
+
+static void test_master_extremes_bound(void)
+{
+    uint32_t c, b, i;
+    for (c = 0; c < 32u; c++) {
+        master_params_t p = MASTER_NEUTRAL;
+        master_t m = MASTER_INIT;
+        p.comp = c & 1u ? 127 : 0;
+        p.tilt = c & 2u ? MASTER_TILT_MAX : -MASTER_TILT_MAX;
+        p.width = c & 4u ? 127 : 0;
+        p.drive = c & 8u ? MASTER_DRIVE_MAX : -MASTER_DRIVE_MAX;
+        p.attack = c & 16u ? 127 : 0;
+        for (b = 0; b < 200u; b++) {
+            int32_t l[CTL], r[CTL];
+            for (i = 0; i < CTL; i++) {
+                l[i] = (i >> 2) & 1u ? 500000 : -500000;
+                r[i] = (i >> 3) & 1u ? 500000 : -500000;
+            }
+            master_block(&m, l, r, &p);
+            for (i = 0; i < CTL; i++)
+                CHECK(abs(l[i]) <= MASTER_CEILING && abs(r[i]) <= MASTER_CEILING);
+        }
+    }
+}
+
+/* the volume scales the output and leaves the stages before it alone */
+static void test_master_volume_last(void)
+{
+    master_params_t p = MASTER_NEUTRAL;
+    master_t a = MASTER_INIT, b = MASTER_INIT;
+    int32_t full, quiet;
+    p.comp = 100;
+    full = master_run(&a, &p, 9000, 500);
+    p.volume_q12 = 1024;
+    quiet = master_run(&b, &p, 9000, 500);
+    CHECK(a.reduction_q16 == b.reduction_q16 && a.env == b.env && a.gain_q12 == b.gain_q12);
+    CHECK(abs(quiet - full / 4) <= 1);
 }
 
 static void test_stop_and_start(void)
@@ -2418,7 +2630,7 @@ static void test_steal_order(void)
 
 static void test_master_bound(void)
 {
-    master_t m = {MASTER_LIMIT};
+    master_t m = MASTER_INIT;
     uint32_t i;
     int32_t after = 0;
     for (i = 0; i < 2000u; i++) {
@@ -2430,7 +2642,7 @@ static void test_master_bound(void)
     }
     CHECK(after <= MASTER_LIMIT);                       /* the limiter holds a sustained overload */
     {
-        master_t q = {MASTER_LIMIT};
+        master_t q = MASTER_INIT;
         int32_t l = 1000, r = -1000;
         master_sample(&q, &l, &r);
         CHECK(l > 900 && l <= 1000 && r == -l);         /* quiet signals pass nearly unchanged */
@@ -2523,6 +2735,16 @@ int main(void)
     test_steal_order();
     test_priority_across_voices();
     test_master_bound();
+    test_master_log_exp();
+    test_master_neutral();
+    test_master_compressor_static();
+    test_master_compressor_times();
+    test_master_compressor_off();
+    test_master_tilt();
+    test_master_width();
+    test_master_drive();
+    test_master_extremes_bound();
+    test_master_volume_last();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

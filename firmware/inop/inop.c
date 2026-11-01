@@ -48,6 +48,7 @@ struct { uint32_t magic, failed, pending; } bootguard __attribute__((section(".n
 #include "seq.c"
 #include "overdub.c"
 #include "voice_chain.c"
+#include "master.c"
 #include "fm_engine.c"
 #include "perc_engine.c"
 #include "swarm_engine.c"

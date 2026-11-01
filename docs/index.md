@@ -50,7 +50,7 @@ Each voice runs from its packet in this order: engine, drive, shaper, bit crush,
 
 - **Effects per trigger:** cheap distortion, such as a wave shaper, bit crush and sample rate reduction.
 - **Shared effects, reached by sends:** delay, reverb and a higher quality distortion.
-- **Master:** mix compression and mastering, then a limiter and soft clip that bound the output level.
+- **Master:** in order: tilt, compressor, width, drive, limiter, soft clip, volume. See Master below.
 - **Envelope follower sends:** a voice sends to a follower instead of an audio output. The follower is a modulation source for any voice.
 
 Shared effects and the master have a fixed CPU cost, which is reserved before voices get budget. A SWARM voice costs more at higher notes and with Sync, since its work follows its waveform edges. It is charged for its note. The System page shows what each engine, effect and shared stage costs.
@@ -87,6 +87,25 @@ Delay and reverb settings are project values and are not in the packet. The Glob
 | Global | BPM | delay time, 1 to 16 steps | delay feedback | reverb size | reverb damping |
 
 The delay holds at most 0.74 s. A longer setting stops at that length. A change of time glides, so it bends pitch and does not click. The delay is mono, and the reverb is stereo.
+
+## Master
+
+The Master page is on GLO. Its values are project values: steps do not lock them, and they do not change with the pattern. A stage at its neutral value costs no CPU, and the budget reserves what all stages cost at full settings. The System page shows that as `MST`.
+
+| Knob | Name | Range | Neutral | What it does |
+| --- | --- | --- | --- | --- |
+| SEL | WIDTH | 0 to 127 | 64 | Stereo width. 0 is mono, and 127 about doubles the side signal. |
+| Knob 1 | COMP | 0 to 127 | 0 | How hard the compressor works. It lowers the threshold from the limit to 30 dB under it, raises the ratio from 1.5:1 to 4:1, and adds back half of what a signal at the limit loses. The knee is 6 dB wide. |
+| Knob 2 | ATK | 0 to 127 | | Attack, 0.7 to 186 ms. |
+| Knob 3 | REL | 0 to 127 | | Release, 29 ms to 1.8 s. |
+| Knob 4 | TILT | -63 to 63 | 0 | Above 0, the lows rise and the highs fall, up to 6 dB each, around 700 Hz. Below 0, the reverse. |
+| ALGO | DRIVE | -48 to 48 | 0 | Gain into the limiter, 6 dB per 12 units, so up to 24 dB each way. Use below 0 to keep a hot mix out of the limiter. |
+
+The compressor links left and right and moves its gain once per block, on the peak of the block that the gain applies to. It sees the signal after TILT.
+
+The free space shows the compressor's curve for a steady level, with the diagonal as no change, and bars for the gain reduction of the compressor and the limiter. A full bar is 12 dB.
+
+The MASTER knob is the last stage, so it sets the volume and does not change how hard the other stages work. A level above the limit goes to the limiter at any knob position.
 
 ## Sound pool
 
@@ -156,7 +175,8 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 | Engine 1, Engine 2 | FM: the algorithm, with carriers solid and modulators outlined. Each box names the ratio knob that sets it: C, A or B. Feedback is marked on B2. To its right, one cycle from the engine at full index. Perc: each partial as a bar, at its frequency and starting level. SWARM and WAVE: the wave. |
 | Step | `HOLD A STEP` until a step is held. |
 | System | Cost in us of one block: each engine alone and shared, each effect, delay, reverb and master, and the budget. Then late buffers, stolen voices and drops. |
-| Master, Arp, Save | `NOT BUILT`. Save warns that power off loses everything. |
+| Master | See Master. |
+| Arp, Save | `NOT BUILT`. Save warns that power off loses everything. |
 
 | Button | Pages |
 | --- | --- |
@@ -287,7 +307,7 @@ The amp envelope means the same as on every other engine:
 - Ratchets: a step fires several times within its length.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
-- Master compression and mastering.
+- Multiband compression on the master.
 
 ## Open
 

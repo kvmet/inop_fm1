@@ -49,7 +49,7 @@ enum {
 typedef struct { int8_t v[PV_COUNT]; } pkt_t;
 
 /* project values: a trigger does not carry these. A page lists them as PV_COUNT + G_ */
-enum { G_DELAY_TIME, G_DELAY_FB, G_REVERB_SIZE, G_REVERB_DAMP, G_COUNT };
+enum { G_DELAY_TIME, G_DELAY_FB, G_REVERB_SIZE, G_REVERB_DAMP, G_MST_COMP, G_MST_ATTACK, G_MST_RELEASE, G_MST_TILT, G_MST_WIDTH, G_MST_DRIVE, G_COUNT };
 #define ID_GLOBAL(g) (PV_COUNT + (g))
 enum { ENGINE_FM, ENGINE_PERC, ENGINE_SWARM, ENGINE_WAVE, ENGINES };
 enum { PRIO_XXLOW, PRIO_XLOW, PRIO_LOW, PRIO_NORMAL, PRIO_HIGH, PRIO_XHIGH, PRIO_XXHIGH, PRIOS };
