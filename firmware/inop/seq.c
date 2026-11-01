@@ -8,6 +8,7 @@ enum { SEQ_RUNNING, SEQ_STOPPED, SEQ_STARTING };
 typedef struct {
     uint32_t sample_acc, samples_per_step;
     uint32_t count;              /* steps since the playing pattern started */
+    uint32_t total;              /* steps since the sequencer started */
     uint8_t playing, next;       /* pattern indices; equal when no switch waits */
     uint8_t plays;               /* completed plays of the playing pattern, modulo SEQ_PLAYS */
     uint8_t run;
@@ -27,6 +28,7 @@ static void seq_rewind(seq_t *q)
     uint32_t i;
     q->sample_acc = 0;
     q->count = 0;
+    q->total = 0;
     q->plays = 0;
     for (i = 0; i < NTRK; i++) {
         q->pos[i] = 0;
@@ -83,6 +85,7 @@ static void seq_advance(seq_t *q, const pattern_t *patterns, seq_emit_t emit)
     const pattern_t *p = &patterns[q->playing];
     uint32_t k;
     q->count++;
+    q->total++;
     if (q->count >= pattern_longest(p)) {
         q->count = 0;
         q->plays = (uint8_t)((q->plays + 1u) % SEQ_PLAYS);
@@ -107,6 +110,12 @@ static void seq_advance(seq_t *q, const pattern_t *patterns, seq_emit_t emit)
 static uint32_t seq_nearest_step(const seq_t *q, uint32_t track, uint32_t length)
 {
     return q->sample_acc * 2u < q->samples_per_step ? q->pos[track] : (q->pos[track] + 1u) % length;
+}
+
+/* where a synced LFO reads its phase from */
+static uint32_t seq_sync_pos(const seq_t *q)
+{
+    return q->total * LFO_SYNC_UNITS_PER_STEP + q->sample_acc * LFO_SYNC_UNITS_PER_STEP / q->samples_per_step;
 }
 
 static void seq_stop(seq_t *q)

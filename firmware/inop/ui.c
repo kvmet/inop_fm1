@@ -170,7 +170,8 @@ static const char *const NAMES_FILTER[FLT_TYPES] = {"OFF", "LP", "BP", "HP"};
 static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "EN1", "EN2", "LF1", "LF2", "VEL", "RND"};
 static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB", "INDX", "LF1R", "LF2R"};
 static const char *const NAMES_SHAPE[LFO_SHAPES] = {"SINE", "TRI", "SAW", "SQR", "S+H"};
-static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE"};
+static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE", "SYNC"};
+static const char *const NAMES_LFO_SYNC[LFO_SYNC_RATES] = {"1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2T", "1/2", "1 BAR", "2 BAR", "4 BAR", "8 BAR", "16BAR"};
 static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PERC", "SWARM", "WAVE"};
 static const char *const NAMES_PRIO[PRIOS] = {"XXLO", "XLO", "LOW", "NORM", "HIGH", "XHI", "XXHI"};
 static const char *const NAMES_WAVE[WAVE_TABLES] = {"HARM", "PWM", "SYNC", "VOX", "FOLD", "DIGI", "METAL", "GRIT"};
@@ -944,6 +945,8 @@ static void value_text(char *b, uint32_t id)
     names = value_names(id, &count);
     if (id == ID_CHANCE && !held_first)
         b[0] = 0;
+    else if ((id == PV_LFO1_RATE && ui_value(PV_LFO1_PHASE) == LFO_SYNC) || (id == PV_LFO2_RATE && ui_value(PV_LFO2_PHASE) == LFO_SYNC))
+        put_text(b, NAMES_LFO_SYNC[lfo_sync_rate_index(ui_value(id))]);
     else if (names)
         put_text(b, names[clamp(ui_value(id), 0, count - 1)]);
     else if (id == PV_LEN && ui_value(id) == (int32_t)LEN_HOLD)
@@ -1097,12 +1100,13 @@ static void free_envelope(int32_t a, int32_t d, int32_t sus, int32_t r)
 }
 
 /* one second across the space, so a faster rate shows more cycles */
-static void free_lfo(int32_t shape, int32_t start, int32_t rate)
+static void free_lfo(int32_t shape, int32_t mode, int32_t start, int32_t rate)
 {
     enum { CYCLE_MIN_PX = 7 };
     lfo_t l;
     int32_t x, py = 0;
-    uint64_t px_inc = (uint64_t)lfo_inc(rate) * (FS / CTL) / (FREE_W - 8u);
+    uint64_t block_inc = mode == LFO_SYNC ? (uint64_t)(0xFFFFFFFFu / LFO_SYNC_CYCLE[lfo_sync_rate_index(rate)]) * LFO_SYNC_UNITS_PER_STEP * CTL / seq.samples_per_step : lfo_inc(rate);
+    uint64_t px_inc = block_inc * (FS / CTL) / (FREE_W - 8u);
     lfo_start(&l, shape, LFO_RETRIGGER, 0, start);
     l.inc = px_inc < 0xFFFFFFFFu / CYCLE_MIN_PX ? (uint32_t)px_inc : 0xFFFFFFFFu / CYCLE_MIN_PX;
     for (x = 0; x < (int32_t)FREE_W - 8; x++) {
@@ -1419,9 +1423,9 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
         else if (pg == &PAGES[PG_FILTER])
             free_filter(p.v[PV_FLT_TYPE], p.v[PV_FLT_CUT], p.v[PV_FLT_RES]);
         else if (pg == &PAGES[PG_LFO1])
-            free_lfo(p.v[PV_LFO1_SHAPE], p.v[PV_LFO1_START], p.v[PV_LFO1_RATE]);
+            free_lfo(p.v[PV_LFO1_SHAPE], p.v[PV_LFO1_PHASE], p.v[PV_LFO1_START], p.v[PV_LFO1_RATE]);
         else if (pg == &PAGES[PG_LFO2])
-            free_lfo(p.v[PV_LFO2_SHAPE], p.v[PV_LFO2_START], p.v[PV_LFO2_RATE]);
+            free_lfo(p.v[PV_LFO2_SHAPE], p.v[PV_LFO2_PHASE], p.v[PV_LFO2_START], p.v[PV_LFO2_RATE]);
         else if (pg == &PAGES[PG_SLOTS])
             free_routes(&p);
         else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_SWARM)

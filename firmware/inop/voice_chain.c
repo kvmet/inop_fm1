@@ -10,7 +10,7 @@ _Static_assert((1 << CTL_BITS) == CTL, "the amp ramp divides by a shift");
 enum { FLT_OFF, FLT_LP, FLT_BP, FLT_HP, FLT_TYPES };
 enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
 enum { LFO_SINE, LFO_TRI, LFO_SAW, LFO_SQUARE, LFO_SH, LFO_SHAPES };
-enum { LFO_RETRIGGER, LFO_FREE, LFO_MODES };
+enum { LFO_RETRIGGER, LFO_FREE, LFO_SYNC, LFO_MODES };
 #define MOD_SLOTS 8u
 _Static_assert(PV_SLOT_DST0 - PV_SLOT_SRC0 == MOD_SLOTS, "the packet holds each slot");
 #define LFO_BASE_INC 155833u     /* 0.05 Hz at one step per render block */
@@ -22,6 +22,7 @@ typedef struct {
 
 typedef struct {
     uint32_t phase, inc, start;
+    uint32_t cycle;              /* a synced LFO's cycle, in LFO_SYNC_UNITS_PER_STEP */
     int32_t held;                /* the S&H shape's value */
     uint8_t shape, mode;
 } lfo_t;
@@ -200,14 +201,31 @@ static AUDIO_INLINE uint32_t lfo_inc(int32_t rate)
     return ((LFO_BASE_INC * SEMI_Q12[r % 12u]) >> 12) << (r / 12u);
 }
 
+/* in steps: 1/32, 1/16, 1/8T, 1/8, 1/4T, 1/4, 1/2T, 1/2, then 1 to 16 bars */
+static const uint32_t LFO_SYNC_CYCLE[] = {384, 768, 1024, 1536, 2048, 3072, 4096, 6144, 12288, 24576, 49152, 98304, 196608};
+#define LFO_SYNC_RATES NELEM(LFO_SYNC_CYCLE)
+static uint32_t lfo_sync_pos;    /* the sequencer's place: all synced LFOs read it */
+
+static uint32_t lfo_sync_rate_index(int32_t rate) { return (uint32_t)clamp(rate, 0, 127) * LFO_SYNC_RATES / 128u; }
+
 static void lfo_start(lfo_t *l, int32_t shape, int32_t mode, int32_t rate, int32_t start)
 {
     l->shape = (uint8_t)clamp(shape, 0, LFO_SHAPES - 1);
     l->mode = (uint8_t)clamp(mode, 0, LFO_MODES - 1);
-    l->inc = lfo_inc(rate);
+    l->cycle = LFO_SYNC_CYCLE[lfo_sync_rate_index(rate)];
+    l->inc = l->mode == LFO_SYNC ? 0xFFFFFFFFu / l->cycle : lfo_inc(rate);
     l->start = (uint32_t)clamp(start, 0, 127) << 25;
     l->phase = l->start;
     l->held = mod_random();
+}
+
+/* the value of one numbered cycle, so voices that share a clock share it. They need not have been sounding when it began */
+static AUDIO_INLINE int32_t lfo_shared_random(uint32_t cycle_number)
+{
+    uint32_t x = (cycle_number + 1u) * 2654435761u;
+    x ^= x >> 15;
+    x *= 2246822519u;
+    return clamp((int32_t)(x >> 16) - 32768, -32767, 32767);
 }
 
 /* -32767..32767. clock counts render blocks: a free-running LFO reads its phase from it, so all its voices agree */
@@ -215,9 +233,18 @@ static AUDIO_INLINE int32_t lfo_block(lfo_t *l, uint32_t clock)
 {
     uint32_t prev = l->phase, q;
     int32_t x;
-    l->phase = l->mode == LFO_FREE ? clock * l->inc + l->start : prev + l->inc;
-    if (l->phase < prev)
+    if (l->mode == LFO_SYNC)
+        l->phase = (lfo_sync_pos % l->cycle) * l->inc + l->start;
+    else if (l->mode == LFO_FREE)
+        l->phase = clock * l->inc + l->start;
+    else
+        l->phase = prev + l->inc;
+    if (l->mode == LFO_RETRIGGER && l->phase < prev)
         l->held = mod_random();
+    if (l->shape == LFO_SH && l->mode == LFO_SYNC)
+        l->held = lfo_shared_random((lfo_sync_pos + (l->start >> 25) * l->cycle / 128u) / l->cycle);
+    if (l->shape == LFO_SH && l->mode == LFO_FREE)
+        l->held = lfo_shared_random((uint32_t)(((uint64_t)clock * l->inc + l->start) >> 32));
     switch (l->shape) {
     case LFO_SAW:
         return (int32_t)(l->phase >> 16) - 32768 + (l->phase >> 16 == 0u);

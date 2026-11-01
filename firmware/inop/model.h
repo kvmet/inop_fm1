@@ -60,6 +60,7 @@ typedef pkt_t sound_t;           /* a pool sound is a packet with no step applie
 #define ENGINE_VALUES (PV_E7 - PV_E0 + 1)
 typedef struct { uint8_t seen; int8_t v[ENGINES][ENGINE_VALUES]; } engine_memory_t;   /* seen: a bit per engine that v holds */
 #define STEP_CHANCE_ALWAYS 100u
+#define LFO_SYNC_UNITS_PER_STEP 768u   /* 3 goes into it, so a triplet cycle is a whole number and stays on the grid */
 
 typedef struct {
     uint8_t on, note, vel, len;  /* STEP_INHERIT, or this step's own. len: steps a note holds */

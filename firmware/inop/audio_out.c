@@ -65,6 +65,7 @@ static void audio_block(int32_t *out)
         l[i] = r[i] = delay_bus[i] = reverb_bus[i] = 0;
     keys_block();
     seq_block(&seq, patterns, CTL, seq_emit);
+    lfo_sync_pos = seq_sync_pos(&seq);
     voices_hold_service(&patterns[seq.playing]);
     voices_render(l, r, delay_bus, reverb_bus);
     AUDIO_FAR(delay_block)(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);

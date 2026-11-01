@@ -485,6 +485,59 @@ static void test_fm_index_routes(void)
     CHECK(c.mod2_env.stage == ENV_RELEASE);             /* the second envelope ends with the note */
 }
 
+static void test_lfo_sync(void)
+{
+    enum { RATE_1_16 = 10, RATE_1_BAR = 79 };
+    lfo_t a, b;
+    seq_t q;
+    uint32_t i;
+    lfo_start(&a, LFO_SINE, LFO_SYNC, RATE_1_16, 0);
+    CHECK(a.cycle == LFO_SYNC_UNITS_PER_STEP);
+    lfo_sync_pos = 0;
+    CHECK(abs(lfo_block(&a, 0)) < 300);                 /* a cycle starts on the grid */
+    lfo_sync_pos = LFO_SYNC_UNITS_PER_STEP / 4u;
+    CHECK(lfo_block(&a, 12345) > 32000);                /* a quarter of a step on: the peak, whatever the block clock says */
+    lfo_sync_pos = LFO_SYNC_UNITS_PER_STEP / 4u + LFO_SYNC_UNITS_PER_STEP * 7u;
+    CHECK(lfo_block(&a, 0) > 32000);                    /* 7 cycles later, the same */
+    lfo_start(&b, LFO_SINE, LFO_SYNC, RATE_1_BAR, 0);
+    CHECK(b.cycle == 16u * LFO_SYNC_UNITS_PER_STEP);
+    lfo_sync_pos = 4u * LFO_SYNC_UNITS_PER_STEP;
+    CHECK(lfo_block(&b, 0) > 32000);                    /* 4 steps are a quarter of a bar */
+    for (i = 0; i < LFO_SYNC_RATES; i++)
+        CHECK(LFO_SYNC_CYCLE[i] % 3u == 0u || LFO_SYNC_CYCLE[i] % 256u == 0u);   /* no fraction of a unit: no drift */
+    seq_init(&q, 120);
+    seq_block(&q, patterns, q.samples_per_step * 3u + q.samples_per_step / 2u, stop_emit);
+    CHECK(seq_sync_pos(&q) == 3u * LFO_SYNC_UNITS_PER_STEP + LFO_SYNC_UNITS_PER_STEP / 2u);
+    seq_stop(&q);
+    CHECK(seq_sync_pos(&q) == 0u);                      /* stop rewinds it */
+}
+
+/* voices that share a clock hold one S&H value, and a late voice joins with the same value */
+static void test_lfo_shared_sample_hold(void)
+{
+    static const int MODES[2] = {LFO_FREE, LFO_SYNC};
+    uint32_t m, n, changes;
+    for (m = 0; m < 2u; m++) {
+        lfo_t a, b;
+        int32_t v = 0;
+        lfo_start(&a, LFO_SH, MODES[m], 60, 0);
+        changes = 0;
+        for (n = 0; n < 3000u; n++) {
+            int32_t now;
+            lfo_sync_pos = n * 40u;
+            now = lfo_block(&a, n);
+            if (n == 1500u)
+                lfo_start(&b, LFO_SH, MODES[m], 60, 0);
+            if (n >= 1500u)
+                CHECK(lfo_block(&b, n) == now);
+            changes += n && now != v;
+            v = now;
+        }
+        CHECK(changes > 2u);
+    }
+    lfo_sync_pos = 0;
+}
+
 static void test_stop_and_start(void)
 {
     seq_t q;
@@ -2865,6 +2918,8 @@ int main(void)
     test_mod_lfo_rate_route();
     test_fm_index_route_keeps_sound();
     test_fm_index_routes();
+    test_lfo_sync();
+    test_lfo_shared_sample_hold();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

@@ -40,9 +40,10 @@ A stolen voice fades out over one audio block, and the new voice starts in the n
 ## LFOs
 
 - Each LFO has a shape and a phase mode. The shapes are sine, triangle, saw, square and S&H.
-- In retrigger mode each voice starts its own LFO. In free mode all voices share one clock, so they agree.
+- In retrigger mode each voice starts its own LFO. In free mode all voices share one clock, so they agree. In sync mode all voices read the sequencer's place, so they agree and stay on the grid.
+- S&H agrees across voices in free and sync modes: a voice that starts late has the value the others hold.
 - Rate 0 is one cycle in 20 s, and the rate doubles every 12 values.
-- LFO rate is not yet synced to BPM.
+- In sync mode, rate picks a cycle length: 1/32, 1/16, 1/8T, 1/8, 1/4T, 1/4, 1/2T, 1/2, then 1, 2, 4, 8 or 16 bars of 16 steps. It follows the tempo. Stop rewinds it, and a pattern change does not.
 
 ## Audio path
 
