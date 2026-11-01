@@ -99,17 +99,21 @@ static void test_lock_capacity(void)
 }
 
 static uint32_t fired[NTRK][256], nfired[NTRK];
-static void emit_log(uint32_t k, uint32_t step, const track_pat_t *t)
+static uint32_t emit_log(uint32_t k, uint32_t step, const track_pat_t *t, uint32_t hits)
 {
     (void)t;
+    (void)hits;
     fired[k][nfired[k]++ & 255u] = step;
+    return 1;
 }
 static const track_pat_t *last_track;
-static void emit_track(uint32_t k, uint32_t step, const track_pat_t *t)
+static uint32_t emit_track(uint32_t k, uint32_t step, const track_pat_t *t, uint32_t hits)
 {
     (void)k;
     (void)step;
+    (void)hits;
     last_track = t;
+    return 1;
 }
 
 static void test_polymeter(void)
@@ -150,12 +154,14 @@ static void test_step_inherits_from_sound(void)
 }
 
 static uint32_t stop_emits, stop_last_step;
-static void stop_emit(uint32_t track, uint32_t step, const track_pat_t *t)
+static uint32_t stop_emit(uint32_t track, uint32_t step, const track_pat_t *t, uint32_t hits)
 {
     (void)track;
     (void)t;
+    (void)hits;
     stop_emits++;
     stop_last_step = step;
+    return 1;
 }
 
 /* blocks of a square wave, so a block's peak is the amplitude. Returns the last block's largest output */
@@ -695,6 +701,320 @@ static void test_mod_dst_of_value(void)
     CHECK(mod_dst_of_value(PV_E1, ENGINE_WAVE) == MOD_DST_TIMBRE && mod_dst_of_value(PV_E2, ENGINE_SWARM) == MOD_DST_TIMBRE);
     CHECK(mod_dst_of_value(PV_E1, ENGINE_FM) == MOD_DST_OFF);
     CHECK(mod_dst_of_value(PV_AMP_D, ENGINE_FM) == MOD_DST_OFF);
+}
+
+#define HIT_LOG 2048u
+static struct { uint32_t at; uint8_t track, step, hits; } hit_log[HIT_LOG];
+static uint32_t hit_count, hit_now, hit_span = 1;
+static seq_t hit_q;
+static uint32_t emit_hit(uint32_t k, uint32_t step, const track_pat_t *t, uint32_t hits)
+{
+    (void)t;
+    if (hit_count < HIT_LOG) {
+        hit_log[hit_count].at = hit_now;
+        hit_log[hit_count].track = (uint8_t)k;
+        hit_log[hit_count].step = (uint8_t)step;
+        hit_log[hit_count].hits = (uint8_t)hits;
+        hit_count++;
+    }
+    return hit_span;
+}
+
+static void hit_run(uint32_t samples)
+{
+    uint32_t i;
+    for (i = 0; i < samples; i++) {
+        hit_now++;
+        seq_block(&hit_q, patterns, 1, emit_hit);
+    }
+}
+
+#define SPB 5512u                /* a step at 120 BPM */
+
+/* one track on, step 0 not, the clock at 0 */
+static void hit_start(void)
+{
+    uint32_t k;
+    reset();
+    seq_init(&hit_q, 120);
+    CHECK(hit_q.samples_per_step == SPB);
+    for (k = 0; k < NTRK; k++)
+        track_init(&patterns[0].track[k], 0);
+    hit_count = 0;
+    hit_now = 0;
+    hit_span = 1;
+}
+
+static void test_seq_late_step(void)
+{
+    hit_start();
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].time = 12;
+    hit_run(SPB + SPB / 4u + 10u);
+    CHECK(hit_count == 1);
+    CHECK(hit_log[0].at == SPB + 12u * SPB / SEQ_TIME_UNITS);
+    hit_run(SPB);
+    CHECK(hit_count == 1);                              /* once */
+}
+
+static void test_seq_early_step(void)
+{
+    hit_start();
+    patterns[0].track[0].steps[2].on = 1;
+    patterns[0].track[0].steps[2].time = -12;
+    hit_run(3u * SPB);
+    CHECK(hit_count == 1);                              /* not again on the grid */
+    CHECK(hit_log[0].at == 2u * SPB - 12u * SPB / SEQ_TIME_UNITS);
+    CHECK(hit_q.fired[0] == 2);
+    hit_start();
+    patterns[0].track[0].length = 4;                    /* an early step 1 belongs to the end of the last step */
+    patterns[0].track[0].steps[0].on = 1;
+    patterns[0].track[0].steps[0].time = -SEQ_TIME_MAX;
+    hit_run(4u * SPB + 10u);
+    CHECK(hit_count == 1 && hit_log[0].at == 4u * SPB - SPB / 2u && hit_log[0].step == 0);
+}
+
+static void test_seq_early_step_edits(void)
+{
+    hit_start();
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].time = -6;
+    hit_run(SPB / 2u + 100u);                           /* looked ahead, not fired */
+    patterns[0].track[0].steps[1].on = 0;
+    hit_run(SPB);
+    CHECK(hit_count == 0);                              /* turned off in time */
+    hit_start();
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].time = -6;
+    hit_run(SPB / 2u + 100u);
+    hit_q.skip[0] = 2;                                      /* played in live */
+    hit_run(SPB);
+    CHECK(hit_count == 0 && hit_q.skip[0] == 0);
+    hit_start();
+    hit_run(SPB / 2u + 100u);
+    patterns[0].track[0].steps[1].on = 1;               /* an edit after the look ahead still fires, on the grid */
+    patterns[0].track[0].steps[1].time = -6;
+    hit_run(SPB);
+    CHECK(hit_count == 1 && hit_log[0].at == SPB);
+    hit_start();
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].time = 6;
+    patterns[0].track[0].steps[1].chance = 0;
+    hit_run(2u * SPB);
+    patterns[0].track[0].steps[1].chance = 100;
+    CHECK(hit_count == 0);
+    hit_start();
+    patterns[0].track[0].steps[1].on = 1;               /* a step on the grid decides on the grid */
+    patterns[0].track[0].steps[1].chance = 0;
+    hit_run(SPB - 10u);
+    patterns[0].track[0].steps[1].chance = 100;
+    hit_run(20u);
+    CHECK(hit_count == 1 && hit_log[0].at == SPB);
+}
+
+static void test_seq_early_step_pattern_change(void)
+{
+    uint32_t k;
+    hit_start();
+    for (k = 0; k < NTRK; k++) {
+        track_init(&patterns[1].track[k], 0);
+        patterns[0].track[k].length = 2;
+        patterns[1].track[k].length = 2;
+    }
+    patterns[0].track[0].steps[0].on = 1;
+    patterns[0].track[0].steps[0].time = -2;
+    patterns[1].track[0].steps[0].on = 1;
+    patterns[1].track[0].steps[0].time = -6;
+    hit_q.next = 1;                                         /* chosen in time: the new pattern's step fires early */
+    hit_run(2u * SPB + 5u);
+    CHECK(hit_count == 1 && hit_log[0].at == 2u * SPB - 6u * SPB / SEQ_TIME_UNITS);
+    CHECK(hit_q.playing == 1);
+    hit_start();
+    for (k = 0; k < NTRK; k++) {
+        track_init(&patterns[1].track[k], 0);
+        patterns[0].track[k].length = 2;
+        patterns[1].track[k].length = 2;
+    }
+    patterns[0].track[0].steps[0].on = 1;
+    patterns[0].track[0].steps[0].time = -2;
+    patterns[1].track[0].steps[1].on = 1;
+    hit_run(2u * SPB - SPB / 4u);                       /* looked ahead, not fired */
+    hit_q.next = 1;                                         /* chosen late: the old pattern's step must not fire */
+    hit_run(SPB / 4u + SPB + 5u);
+    CHECK(hit_count == 1 && hit_log[0].step == 1 && hit_log[0].at == 3u * SPB);
+    hit_start();
+    for (k = 0; k < NTRK; k++) {
+        track_init(&patterns[1].track[k], 0);
+        patterns[0].track[k].length = 2;
+        patterns[1].track[k].length = 2;
+    }
+    hit_span = 4;                                       /* a new pattern ends a ratchet from the old one */
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 8;
+    hit_q.next = 1;
+    hit_run(3u * SPB);
+    CHECK(hit_count == 2 && hit_q.playing == 1);
+}
+
+static void test_seq_ratchet(void)
+{
+    uint32_t i, kept = 0;
+    hit_start();
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 4;
+    hit_run(3u * SPB);
+    CHECK(hit_count == 4);
+    for (i = 0; i < 4u; i++) {
+        CHECK(hit_log[i].at == SPB + i * (SPB / 4u));
+        CHECK(hit_log[i].hits == 4 && hit_log[i].step == 1);
+    }
+    hit_start();
+    hit_span = 2;                                       /* a longer note: the hits spread over it */
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 3;
+    hit_run(4u * SPB);
+    CHECK(hit_count == 3 && hit_log[1].at == SPB + 2u * SPB / 3u && hit_log[2].at == SPB + 2u * (2u * SPB / 3u));
+    hit_start();
+    hit_span = 4;                                       /* the next step on the track ends the ratchet */
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 8;
+    patterns[0].track[0].steps[2].on = 1;
+    hit_run(2u * SPB + SPB / 2u);
+    CHECK(hit_count == 3 && hit_log[0].step == 1 && hit_log[1].step == 1 && hit_log[2].step == 2 && hit_log[2].at == 2u * SPB);
+    hit_start();                                        /* chance decides for the whole step */
+    patterns[0].track[0].length = 2;
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 2;
+    patterns[0].track[0].steps[1].chance = 50;
+    hit_run(200u * SPB);
+    CHECK(hit_count % 2u == 0u && hit_count > 60u && hit_count < 140u);
+    for (i = 0; i + 1u < hit_count; i += 2u) {
+        kept += hit_log[i + 1u].at - hit_log[i].at == SPB / 2u;
+    }
+    CHECK(kept == hit_count / 2u);
+    hit_start();                                        /* a late ratchet moves as one */
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 2;
+    patterns[0].track[0].steps[1].time = 6;
+    hit_run(3u * SPB);
+    CHECK(hit_count == 2 && hit_log[0].at == SPB + 6u * SPB / SEQ_TIME_UNITS && hit_log[1].at == hit_log[0].at + SPB / 2u);
+    hit_start();                                        /* stop drops what waits */
+    patterns[0].track[0].steps[1].on = 1;
+    patterns[0].track[0].steps[1].hits = 4;
+    hit_run(SPB + 10u);
+    CHECK(hit_count == 1);
+    seq_stop(&hit_q);
+    patterns[0].track[0].steps[1].on = 0;
+    seq_start(&hit_q);
+    hit_run(3u * SPB);
+    CHECK(hit_count == 1);
+}
+
+static void test_step_timing_clears(void)
+{
+    track_pat_t *t = &patterns[0].track[0];
+    reset();
+    t->steps[3].hits = 4;
+    CHECK(step_locked(t, 3));
+    step_clear_locks(t, 3);
+    CHECK(t->steps[3].hits == 1 && !step_locked(t, 3));
+    t->steps[3].time = -5;
+    CHECK(step_locked(t, 3));
+    step_clear_locks(t, 3);
+    CHECK(t->steps[3].time == 0 && !step_locked(t, 3));
+}
+
+static void test_seq_swing(void)
+{
+    uint32_t i;
+    hit_start();
+    patterns[0].track[0].swing = 12;
+    for (i = 1; i < 5u; i++) {
+        patterns[0].track[0].steps[i].on = 1;
+        patterns[0].track[1].steps[i].on = 1;
+    }
+    hit_run(5u * SPB);
+    CHECK(hit_count == 8);
+    for (i = 0; i < hit_count; i++) {
+        uint32_t step = hit_log[i].step, late = hit_log[i].track == 0 && (step & 1u) ? 12u * SPB / SEQ_TIME_UNITS : 0u;
+        CHECK(hit_log[i].at == step * SPB + late);      /* the second of each pair, on this track only */
+    }
+}
+
+static void test_seq_human(void)
+{
+    int64_t sum = 0, squares = 0, lag = 0;
+    int32_t last = 0, peak = 0;
+    uint32_t i, n = 0;
+    const int32_t human = 6;
+    hit_start();
+    for (i = 0; i < NSTEP; i++)
+        patterns[0].track[0].steps[i].on = 1;
+    patterns[0].track[0].length = 16;
+    hit_run(8u * SPB);
+    for (i = 0; i < hit_count; i++)
+        CHECK(hit_log[i].at == hit_log[i].step * SPB || i == 0);   /* 0: the grid, exactly */
+    hit_start();
+    for (i = 0; i < 16u; i++)
+        patterns[0].track[0].steps[i].on = 1;
+    patterns[0].track[0].human = (uint8_t)human;
+    hit_run(1000u * SPB);
+    CHECK(hit_count >= 950u);
+    for (i = 5; i < hit_count; i++) {
+        uint32_t grid = (hit_log[i].at + SPB / 2u) / SPB * SPB;
+        int32_t offset = (int32_t)hit_log[i].at - (int32_t)grid;
+        CHECK(hit_log[i].step == grid / SPB % 16u);     /* still on its own step */
+        sum += offset;
+        squares += (int64_t)offset * offset;
+        lag += (int64_t)offset * last;
+        peak = abs(offset) > peak ? abs(offset) : peak;
+        last = offset;
+        n++;
+    }
+    {
+        double unit = (double)SPB / SEQ_TIME_UNITS, spread = sqrt((double)squares / n);
+        CHECK(fabs((double)sum / n) < spread * 0.2);    /* no lean ahead or behind */
+        CHECK(spread > human * unit * 0.6 && spread < human * unit * 1.4);
+        CHECK((double)lag / (double)squares > 0.5);     /* each offset stays near the last: a wander */
+        CHECK(peak <= (int32_t)(SPB / 2u));
+    }
+}
+
+/* the amounts add, and stop at half a step, so hits never swap */
+static void test_seq_offset_limit(void)
+{
+    uint32_t i;
+    hit_start();
+    for (i = 0; i < 16u; i++) {
+        patterns[0].track[0].steps[i].on = 1;
+        patterns[0].track[0].steps[i].time = (i & 1u) ? SEQ_TIME_MAX : -SEQ_TIME_MAX;
+    }
+    patterns[0].track[0].swing = SEQ_TIME_MAX;
+    patterns[0].track[0].human = SEQ_TIME_MAX;
+    hit_run(200u * SPB);
+    CHECK(hit_count > 150u);
+    for (i = 1; i < hit_count; i++) {
+        int32_t cycle = 16 * (int32_t)SPB, from_grid = ((int32_t)hit_log[i].at - hit_log[i].step * (int32_t)SPB + cycle / 2 + 1000 * cycle) % cycle - cycle / 2;
+        CHECK(hit_log[i].at >= hit_log[i - 1u].at);
+        CHECK(abs(from_grid) <= (int32_t)(SPB / 2u));
+    }
+}
+
+static void test_voice_ratchet_gate(void)
+{
+    pkt_t p;
+    memset(voices, 0, sizeof voices);
+    sound_init(&p, 0);
+    p.v[PV_LEN] = 4;
+    CHECK(voice_trigger_step(&p, 2, 5120u, 4u) == 4u);
+    CHECK(voices[0].hold_blocks == 5120u / CTL);        /* a hit's share of 4 steps */
+    memset(voices, 0, sizeof voices);
+    p.v[PV_LEN] = (int8_t)LEN_HOLD;
+    CHECK(voice_trigger_step(&p, 2, 5120u, 4u) == 1u);  /* a held note cannot retrigger: the ratchet takes a step */
+    CHECK(voices[0].hold_blocks == 5120u / 4u / CTL && voices[0].key == KEY_NONE);
+    memset(voices, 0, sizeof voices);
+    CHECK(voice_trigger_step(&p, 2, 5120u, 1u) == 1u);
+    CHECK(voices[0].hold_blocks == 0 && voices[0].key == KEY_TRACK(2));
 }
 
 static void test_stop_and_start(void)
@@ -2615,21 +2935,21 @@ static void test_hold(void)
     other = p;
     other.v[PV_NOTE] = 48;
     memset(voices, 0, sizeof voices);
-    voice_trigger_step(&p, 2, 5000u);
+    voice_trigger_step(&p, 2, 5000u, 1u);
     for (b = 0; b < 3000u; b++) {
         for (i = 0; i < CTL; i++)
             l[i] = r[i] = d[i] = w[i] = 0;
         voices_render(l, r, d, w);
     }
     CHECK(count_active_key(KEY_TRACK(2)) == 1u);        /* far past any step count */
-    voice_trigger_step(&p, 2, 5000u);
+    voice_trigger_step(&p, 2, 5000u, 1u);
     CHECK(voices_active() == 1u);                       /* the same note keeps sounding */
-    voice_trigger_step(&p, 3, 5000u);
+    voice_trigger_step(&p, 3, 5000u, 1u);
     CHECK(count_active_key(KEY_TRACK(2)) == 1u && count_active_key(KEY_TRACK(3)) == 1u);   /* another track's note leaves it */
-    voice_trigger_step(&other, 2, 5000u);
+    voice_trigger_step(&other, 2, 5000u, 1u);
     CHECK(count_active_key(KEY_TRACK(2)) == 1u && voices_active() == 3u);    /* a new note: the old one is in release */
     p.v[PV_LEN] = 1;
-    voice_trigger_step(&p, 2, 5000u);
+    voice_trigger_step(&p, 2, 5000u, 1u);
     CHECK(count_active_key(KEY_TRACK(2)) == 0u);        /* so does a note of a set length */
     for (k = 0; k < NTRK; k++)
         track_init(&pat.track[k], 0);
@@ -3085,6 +3405,16 @@ int main(void)
     test_mod_each_lfo_is_its_own_source();
     test_mod_route_slot();
     test_mod_dst_of_value();
+    test_seq_late_step();
+    test_seq_early_step();
+    test_seq_early_step_edits();
+    test_seq_early_step_pattern_change();
+    test_seq_ratchet();
+    test_step_timing_clears();
+    test_seq_swing();
+    test_seq_human();
+    test_seq_offset_limit();
+    test_voice_ratchet_gate();
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();

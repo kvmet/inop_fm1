@@ -154,7 +154,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 ## REC
 
 - **Hold:** copy. Press the source, then press each destination.
-- **Clear locks:** hold a step and tap REC. The step keeps its trigger and loses its locks, its note, velocity and length, its sound and its chance. Every held step clears. There is no undo yet.
+- **Clear locks:** hold a step and tap REC. The step keeps its trigger and loses its locks, its note, velocity and length, its sound, its chance, its ratchet and its time. Every held step clears. There is no undo yet.
 - **Overdub:** tap REC, under 300 ms with nothing else pressed. The playing pattern takes what you do on the selected track, and it keeps playing. Tap REC or PLAY to exit.
   - **Notes:** a key sounds at once and goes to the nearest step of the track. That step is turned on and takes the note and the held length. A step holds one note, so a second note on a step replaces the first.
   - **Black keys:** the black keys are notes too, and the last one stays shift. Hold REC and press OP1 to OP6 to change tracks. The key LEDs show the keyboard as in play, not the steps, and the selected track's key flashes. `DUB` in the title bar inverts in time with it.
@@ -185,7 +185,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 - **Unused knobs:** blank, and turning them does nothing.
 - **Page tabs:** when a page button has more than one page, its lower edge shows one segment per page. The shown page's segment is solid. Press the page button again for the next page.
 - **Bottom row:** the OCT hint on the left. On the right, in fixed places, `CPU 42 V 08 D00`: load, active voices and dropped triggers. D wraps at 100 and flashes for 1 s on a new drop. A held step's values replace them while it is held. The System page shows late audio buffers and stolen voices.
-- **Sequence:** below the free space, one row of steps per track, for the pattern being edited or previewed. All tracks use one step width, so shorter tracks end early. A playhead shows only when the shown pattern is playing. Each row has a square for each step and a lane under the squares for the playhead. A step with locks, or with a changed note, velocity, length or chance, has a dot in its square. The selected track's number is inverted. A line in its lane marks the steps that the white keys reach.
+- **Sequence:** below the free space, one row of steps per track, for the pattern being edited or previewed. All tracks use one step width, so shorter tracks end early. A playhead shows only when the shown pattern is playing. Each row has a square for each step and a lane under the squares for the playhead. A step with locks, or with a changed note, velocity, length, chance, ratchet or time, has a dot in its square. The selected track's number is inverted. A line in its lane marks the steps that the white keys reach.
 - **Page buttons:** the first press shows the group's last page. Each next press moves through the group. HOME has one page, so it always lands there.
 - **Knobs:** with no step held, they edit the track's sound. With a step held, they edit that step.
 - **Counts:** D counts triggers that never sounded. STOLEN on the System page counts sounding voices that a new trigger cut short.
@@ -215,7 +215,20 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | ARP | Arp (reserved for a Perform and Arp group) |
 | SAVE | Save |
 
-The Step page's knob 1 sets the chance that a held step fires, 0 to 100 %. Knobs do nothing there with no step held.
+The Step page edits held steps. Knobs do nothing there with no step held.
+
+- **CHANCE:** the chance that the step fires, 0 to 100 %. A ratchet plays all its hits or none.
+- **RATCH:** 1 to 8 hits, evenly spaced over the note's length. Each hit's gate is its share of the length. A held note counts as one step. The track's next trigger ends a ratchet that is still running.
+- **TIME:** ahead of or behind the grid, up to half a step, in 1/48 of a step.
+
+The Track page holds two more timing values, per track and per pattern. Both use 1/48 of a step.
+
+- **SWING:** how late every second step fires, 0 to 24. 12 is 62.5 % swing and 24 is 75 %.
+- **HUMAN:** how far a track's timing wanders, as about one standard deviation. Each trigger stays near the last, so the track drifts instead of jittering. 0 is exact.
+
+TIME, SWING and HUMAN add, and stop at half a step, so hits keep their order. Timing resolution is one block, 0.73 ms.
+
+A step that fires early is planned half a step ahead. Turning it off, or playing it in, cancels it until it fires. A pattern chosen in that half step replaces it unless it has already fired.
 
 A sound keeps its engine values for each engine it has used. A new engine starts from its defaults, and sweeping back restores the old values. A lock on the engine changes only that step and does not use this memory.
 
@@ -338,9 +351,6 @@ python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
 - Chord modes.
 - Quantization: pitch to a scale, and recorded notes to steps.
 - Arpeggiator.
-- Microtiming: a step fires ahead of or behind the grid.
-- Swing.
-- Ratchets: a step fires several times within its length.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
 - Multiband compression on the master.

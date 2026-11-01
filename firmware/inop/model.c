@@ -46,6 +46,8 @@ static void track_init(track_pat_t *t, uint32_t base)
     t->length = 16;
     t->base = (uint8_t)base;
     t->nlock = 0;
+    t->swing = 0;
+    t->human = 0;
     for (i = 0; i < NSTEP; i++) {
         step_t *s = &t->steps[i];
         s->on = 0;
@@ -54,8 +56,8 @@ static void track_init(track_pat_t *t, uint32_t base)
         s->len = STEP_INHERIT;
         s->sound = SOUND_NONE;
         s->chance = STEP_CHANCE_ALWAYS;
-        s->cond = 0;
-        s->ratchet = 0;
+        s->hits = 1;
+        s->time = 0;
     }
 }
 
@@ -159,7 +161,7 @@ static uint32_t step_lock_count(const track_pat_t *t, uint32_t step)
 static int step_locked(const track_pat_t *t, uint32_t step)
 {
     const step_t *s = &t->steps[step];
-    return s->sound != SOUND_NONE || s->note != STEP_INHERIT || s->vel != STEP_INHERIT || s->len != STEP_INHERIT || s->chance != STEP_CHANCE_ALWAYS || step_lock_count(t, step);
+    return s->sound != SOUND_NONE || s->note != STEP_INHERIT || s->vel != STEP_INHERIT || s->len != STEP_INHERIT || s->chance != STEP_CHANCE_ALWAYS || s->hits != 1u || s->time || step_lock_count(t, step);
 }
 
 /* base sound, then the step's sound lock, then the step's locks */
@@ -200,6 +202,8 @@ static void step_clear_locks(track_pat_t *t, uint32_t step)
     s->note = s->vel = s->len = STEP_INHERIT;
     s->sound = SOUND_NONE;
     s->chance = STEP_CHANCE_ALWAYS;
+    s->hits = 1;
+    s->time = 0;
 }
 
 /* 0, or -1 when the lock memory filled before every lock was copied */

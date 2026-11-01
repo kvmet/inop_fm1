@@ -17,7 +17,7 @@ enum { E_SELECT = 0, E_ALGO = 1, E_PRESETS = 6, E_K1 = 2 };
 static const uint8_t KNOB_ENC[NKNOB] = {E_SELECT, E_K1, E_K1 + 1, E_K1 + 2, E_K1 + 3, E_ALGO};
 
 /* values that belong to the panel and not to a sound */
-enum { ID_BPM = ID_GLOBAL(G_COUNT), ID_SLOT, ID_LENGTH, ID_BASE, ID_CHANCE, ID_NONE = 0xFF };
+enum { ID_BPM = ID_GLOBAL(G_COUNT), ID_SLOT, ID_LENGTH, ID_BASE, ID_CHANCE, ID_HITS, ID_TIME, ID_SWING, ID_HUMAN, ID_NONE = 0xFF };
 
 typedef struct { const char *name; uint8_t id[NKNOB]; const char *label[NKNOB]; } page_t;
 static const page_t PAGES[] = {
@@ -35,12 +35,12 @@ static const page_t PAGES[] = {
     {"GLOB", {ID_BPM, ID_GLOBAL(G_DELAY_TIME), ID_GLOBAL(G_DELAY_FB), ID_GLOBAL(G_REVERB_SIZE), ID_GLOBAL(G_REVERB_DAMP), ID_NONE}, {"BPM", "DLY T", "DLY FB", "SIZE", "DAMP", ""}},
     {"SEND", {ID_NONE, PV_SEND_DELAY, PV_SEND_REVERB, PV_SEND_FOLLOW, ID_NONE, ID_NONE}, {"", "DELAY", "REVERB", "FOLLOW", "", ""}},
     {"FOL", {ID_NONE, ID_GLOBAL(G_FOL_ATTACK), ID_GLOBAL(G_FOL_RELEASE), ID_NONE, ID_NONE, ID_NONE}, {"", "ATK", "REL", "", "", ""}},
-    {"STEP", {ID_NONE, ID_CHANCE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "CHANCE", "", "", "", ""}},
+    {"STEP", {ID_NONE, ID_CHANCE, ID_HITS, ID_TIME, ID_NONE, ID_NONE}, {"", "CHANCE", "RATCH", "TIME", "", ""}},
     {"MAST", {ID_GLOBAL(G_MST_WIDTH), ID_GLOBAL(G_MST_COMP), ID_GLOBAL(G_MST_ATTACK), ID_GLOBAL(G_MST_RELEASE), ID_GLOBAL(G_MST_TILT), ID_GLOBAL(G_MST_DRIVE)}, {"WIDTH", "COMP", "ATK", "REL", "TILT", "DRIVE"}},
     {"SYS", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"ARP", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"SAVE", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
-    {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_NONE, ID_NONE, ID_NONE}, {"", "LENGTH", "SOUND", "", "", ""}},
+    {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_SWING, ID_HUMAN, ID_NONE}, {"", "LENGTH", "SOUND", "SWING", "HUMAN", ""}},
 };
 
 enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_MOD2, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_SENDS, PG_FOLLOWER, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
@@ -144,6 +144,10 @@ static track_pat_t *dub_track(void) { return &patterns[seq.playing].track[ui.tra
 static uint32_t dub_next_step(void) { return (seq.pos[ui.track] + 1u) % dub_track()->length; }
 static uint32_t step_ms(void) { return seq.samples_per_step * 1000u / FS; }
 
+static int id_is_step_field(uint32_t id) { return id == ID_CHANCE || id == ID_HITS || id == ID_TIME; }
+
+static int32_t step_field(const step_t *s, uint32_t id) { return id == ID_CHANCE ? s->chance : id == ID_HITS ? s->hits : s->time; }
+
 /* what the knobs show: the held step's values as it would play, in overdub the last trigger's, else the base sound's */
 static void ui_packet(pkt_t *p)
 {
@@ -169,8 +173,12 @@ static int32_t ui_value(uint32_t id)
         return ui_track()->length;
     if (id == ID_BASE)
         return ui_track()->base + 1;
-    if (id == ID_CHANCE)
-        return held_first ? held_first->t->steps[held_first->step].chance : 0;
+    if (id == ID_SWING)
+        return ui_track()->swing;
+    if (id == ID_HUMAN)
+        return ui_track()->human;
+    if (id_is_step_field(id))
+        return held_first ? step_field(&held_first->t->steps[held_first->step], id) : 0;
     if (id >= PV_COUNT)
         return globals[id - PV_COUNT];
     ui_packet(&p);
@@ -241,6 +249,12 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, 1, NSOUND);
     if (id == ID_CHANCE)
         return clamp(v, 0, STEP_CHANCE_ALWAYS);
+    if (id == ID_HITS)
+        return clamp(v, 1, STEP_HITS_MAX);
+    if (id == ID_TIME)
+        return clamp(v, -SEQ_TIME_MAX, SEQ_TIME_MAX);
+    if (id == ID_SWING || id == ID_HUMAN)
+        return clamp(v, 0, SEQ_TIME_MAX);
     if (id == ID_GLOBAL(G_DELAY_TIME))
         return clamp(v, 1, 16);                  /* in steps */
     if (id == ID_GLOBAL(G_MST_TILT))
@@ -358,14 +372,24 @@ static void ui_knob(uint32_t id, int32_t delta)
         seq_set_bpm(&seq, ui.bpm);
     } else if (id == ID_SLOT) {
         ui.slot = (uint8_t)panel;
-    } else if (id == ID_CHANCE) {
+    } else if (id_is_step_field(id)) {
         for (i = 0; i < NELEM(held); i++)
             if (held[i].t) {
                 step_t *s = &held[i].t->steps[held[i].step];
-                s->chance = (uint8_t)value_clamp(id, s->chance + delta);
+                int32_t v = value_clamp(id, step_field(s, id) + delta);
+                if (id == ID_CHANCE)
+                    s->chance = (uint8_t)v;
+                else if (id == ID_HITS)
+                    s->hits = (uint8_t)v;
+                else
+                    s->time = (int8_t)v;
                 s->on = 1;
                 held[i].used = 1;
             }
+    } else if (id == ID_SWING) {
+        ui_track()->swing = (uint8_t)panel;
+    } else if (id == ID_HUMAN) {
+        ui_track()->human = (uint8_t)panel;
     } else if (id == ID_LENGTH) {
         track_pat_t *t = ui_track();
         uint32_t irq = irq_save();
@@ -1071,8 +1095,10 @@ static void value_text(char *b, uint32_t id)
     int32_t count;
     const char *const *names;
     names = value_names(id, &count);
-    if (id == ID_CHANCE && !held_first)
+    if (id_is_step_field(id) && !held_first)
         b[0] = 0;
+    else if (id == ID_TIME && ui_value(id) > 0)
+        put_int(put_text(b, "+"), ui_value(id));
     else if ((id == PV_LFO1_RATE && ui_value(PV_LFO1_PHASE) == LFO_SYNC) || (id == PV_LFO2_RATE && ui_value(PV_LFO2_PHASE) == LFO_SYNC))
         put_text(b, NAMES_LFO_SYNC[lfo_sync_rate_index(ui_value(id))]);
     else if (names)
@@ -1107,6 +1133,10 @@ static int value_held_locked(uint32_t id)
         return 0;
     if (id == ID_CHANCE)
         return held_first->t->steps[held_first->step].chance != STEP_CHANCE_ALWAYS;
+    if (id == ID_HITS)
+        return held_first->t->steps[held_first->step].hits != 1u;
+    if (id == ID_TIME)
+        return held_first->t->steps[held_first->step].time != 0;
     return id < PV_COUNT && step_value_locked(held_first->t, held_first->step, id);
 }
 

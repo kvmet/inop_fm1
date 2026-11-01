@@ -60,13 +60,17 @@ typedef pkt_t sound_t;           /* a pool sound is a packet with no step applie
 #define ENGINE_VALUES (PV_E7 - PV_E0 + 1)
 typedef struct { uint8_t seen; int8_t v[ENGINES][ENGINE_VALUES]; } engine_memory_t;   /* seen: a bit per engine that v holds */
 #define STEP_CHANCE_ALWAYS 100u
+#define STEP_HITS_MAX 8u
+#define SEQ_TIME_UNITS 48        /* in a step: the unit of a step's time, a track's swing and its human amount */
+#define SEQ_TIME_MAX (SEQ_TIME_UNITS / 2)
 #define LFO_SYNC_UNITS_PER_STEP 768u   /* 3 goes into it, so a triplet cycle is a whole number and stays on the grid */
 
 typedef struct {
     uint8_t on, note, vel, len;  /* STEP_INHERIT, or this step's own. len: steps a note holds */
     uint8_t sound;               /* sound lock: a pool index, or SOUND_NONE */
     uint8_t chance;              /* percent */
-    uint8_t cond, ratchet;
+    uint8_t hits;                /* a ratchet: triggers evenly spaced over the note's length */
+    int8_t time;                 /* ahead of or behind the grid, in SEQ_TIME_UNITS */
 } step_t;
 
 typedef struct { uint8_t step, id; int8_t value; } lock_t;
@@ -74,6 +78,7 @@ typedef struct { uint8_t step, id; int8_t value; } lock_t;
 typedef struct {
     uint8_t length, base;        /* base: a pool index */
     uint16_t nlock;
+    uint8_t swing, human;        /* in SEQ_TIME_UNITS. swing: how late even-numbered steps fire. human: about the size of the wander */
     step_t steps[NSTEP];
     lock_t locks[TRACK_LOCKS];   /* sorted by step, then id */
 } track_pat_t;

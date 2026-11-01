@@ -16,10 +16,15 @@ typedef struct {
     uint8_t fired[NTRK];         /* the step of each track's last trigger, or SEQ_NOT_FIRED */
     uint8_t skip[NTRK];          /* step + 1: this step already sounded when it was played in, so its next trigger is dropped */
     uint32_t rng;
+    uint8_t looked;              /* this step's look ahead has run */
+    int16_t drift[NTRK];         /* where each track's human offset has wandered to, in +-SEQ_DRIFT_MAX */
+    struct { const track_pat_t *t; uint32_t wait; uint8_t step; } waiting[NTRK];             /* a step's first hit, off the grid. t 0: none */
+    struct { const track_pat_t *t; uint32_t wait, spacing; uint8_t step, hits, left; } ratchet[NTRK];   /* a ratchet's other hits */
+    struct { const track_pat_t *t; int32_t offset; uint8_t step, rolled; } plan[NTRK];       /* the look ahead's result for the next step. t 0: none */
 } seq_t;
 
-/* fires one trigger; the caller owns the voices */
-typedef void (*seq_emit_t)(uint32_t track, uint32_t step, const track_pat_t *t);
+/* fires one trigger; the caller owns the voices. Returns the steps the note spans, which a ratchet's hits divide */
+typedef uint32_t (*seq_emit_t)(uint32_t track, uint32_t step, const track_pat_t *t, uint32_t hits);
 
 static void seq_set_bpm(seq_t *q, uint32_t bpm) { q->samples_per_step = FS * 15u / bpm; }
 
@@ -34,7 +39,11 @@ static void seq_rewind(seq_t *q)
         q->pos[i] = 0;
         q->skip[i] = 0;
         q->fired[i] = SEQ_NOT_FIRED;
+        q->waiting[i].t = 0;
+        q->ratchet[i].left = 0;
+        q->plan[i].t = 0;
     }
+    q->looked = 0;
 }
 
 static void seq_init(seq_t *q, uint32_t bpm)
@@ -63,19 +72,132 @@ static uint32_t seq_rand100(seq_t *q)
     return q->rng % 100u;
 }
 
-static void seq_fire(seq_t *q, const pattern_t *p, seq_emit_t emit)
+/* each trigger's offset keeps 3/4 of the last, so the timing wanders where independent offsets would only sound loose */
+#define SEQ_DRIFT_STEP 256
+#define SEQ_DRIFT_MAX (SEQ_DRIFT_STEP * 4)
+
+/* samples ahead (negative) or behind the grid. Never past half a step, so hits keep their order */
+static int32_t seq_offset(seq_t *q, uint32_t k, const track_pat_t *t, uint32_t step)
+{
+    int32_t spb = (int32_t)q->samples_per_step, half = spb / 2;
+    int32_t units = t->steps[step].time + (step & 1u ? t->swing : 0);
+    int32_t offset = units * spb / SEQ_TIME_UNITS;
+    if (t->human) {
+        q->drift[k] = (int16_t)(q->drift[k] * 3 / 4 + (int32_t)(seq_rand100(q) * (2 * SEQ_DRIFT_STEP + 1) / 100) - SEQ_DRIFT_STEP);
+        offset += t->human * q->drift[k] * spb / (SEQ_TIME_UNITS * SEQ_DRIFT_STEP);
+    }
+    return clamp(offset, -half, half);
+}
+
+static void seq_first_hit(seq_t *q, uint32_t k, const track_pat_t *t, uint32_t step, seq_emit_t emit)
+{
+    uint32_t hits = t->steps[step].hits, span;
+    q->fired[k] = (uint8_t)step;
+    q->ratchet[k].left = 0;
+    span = emit(k, step, t, hits);
+    if (hits > 1u) {
+        q->ratchet[k].t = t;
+        q->ratchet[k].step = (uint8_t)step;
+        q->ratchet[k].hits = (uint8_t)hits;
+        q->ratchet[k].left = (uint8_t)(hits - 1u);
+        q->ratchet[k].spacing = span * q->samples_per_step / hits;
+        q->ratchet[k].wait = q->ratchet[k].spacing;
+    }
+}
+
+/* an early hit planned from the playing pattern, when a pattern chosen since then takes over at the coming step */
+static int seq_waiting_replaced(const seq_t *q, const pattern_t *patterns, uint32_t k)
+{
+    const track_pat_t *t = q->waiting[k].t;
+    return q->plan[k].t == t && q->plan[k].rolled && q->plan[k].step == q->waiting[k].step && q->next != q->playing
+        && t == &patterns[q->playing].track[k] && q->count + 1u >= pattern_longest(&patterns[q->playing]);
+}
+
+/* the step can have been turned off or played in live since it was planned */
+static void seq_release_waiting(seq_t *q, const pattern_t *patterns, uint32_t k, seq_emit_t emit)
+{
+    const track_pat_t *t = q->waiting[k].t;
+    uint32_t step = q->waiting[k].step;
+    int replaced = seq_waiting_replaced(q, patterns, k);
+    q->waiting[k].t = 0;
+    if (q->skip[k] == step + 1u) {
+        q->skip[k] = 0;
+        return;
+    }
+    if (t->steps[step].on && !replaced)
+        seq_first_hit(q, k, t, step, emit);
+}
+
+static void seq_wait(seq_t *q, const pattern_t *patterns, uint32_t k, const track_pat_t *t, uint32_t step, uint32_t samples, seq_emit_t emit)
+{
+    if (q->waiting[k].t)                         /* a tempo rise can catch up with a late hit */
+        seq_release_waiting(q, patterns, k, emit);
+    q->waiting[k].t = t;
+    q->waiting[k].step = (uint8_t)step;
+    q->waiting[k].wait = samples;
+}
+
+static void seq_fire_due(seq_t *q, const pattern_t *patterns, seq_emit_t emit)
+{
+    uint32_t k;
+    for (k = 0; k < NTRK; k++) {
+        if (q->waiting[k].t && !q->waiting[k].wait)
+            seq_release_waiting(q, patterns, k, emit);
+        if (q->ratchet[k].left && !q->ratchet[k].wait) {
+            q->ratchet[k].left--;
+            q->ratchet[k].wait = q->ratchet[k].spacing;
+            emit(k, q->ratchet[k].step, q->ratchet[k].t, q->ratchet[k].hits);
+        }
+    }
+}
+
+/* half a step before the grid: a step that fires early must start waiting now. The others decide on the grid, so an edit up to then still counts */
+static void seq_look_ahead(seq_t *q, const pattern_t *patterns, seq_emit_t emit)
+{
+    const pattern_t *p = &patterns[q->playing];
+    int switching = q->next != q->playing && q->count + 1u >= pattern_longest(p);
+    uint32_t k;
+    if (switching)
+        p = &patterns[q->next];
+    for (k = 0; k < NTRK; k++) {
+        const track_pat_t *t = &p->track[k];
+        uint32_t step = switching ? 0u : (q->pos[k] + 1u) % t->length;
+        q->plan[k].t = 0;
+        if (!t->steps[step].on)
+            continue;
+        q->plan[k].t = t;
+        q->plan[k].step = (uint8_t)step;
+        q->plan[k].offset = seq_offset(q, k, t, step);
+        q->plan[k].rolled = q->plan[k].offset < 0;
+        if (q->plan[k].rolled && seq_rand100(q) < t->steps[step].chance)
+            seq_wait(q, patterns, k, t, step, (uint32_t)((int32_t)(q->samples_per_step - q->sample_acc) + q->plan[k].offset), emit);
+    }
+}
+
+static void seq_fire(seq_t *q, const pattern_t *patterns, const pattern_t *p, seq_emit_t emit)
 {
     uint32_t k;
     for (k = 0; k < NTRK; k++) {
         const track_pat_t *t = &p->track[k];
-        const step_t *s = &t->steps[q->pos[k]];
-        if (q->skip[k] == q->pos[k] + 1u) {
+        uint32_t step = q->pos[k];
+        const step_t *s = &t->steps[step];
+        int planned = q->plan[k].t == t && q->plan[k].step == step, rolled = planned && q->plan[k].rolled;
+        int32_t offset = q->plan[k].offset;
+        q->plan[k].t = 0;
+        if (q->skip[k] == step + 1u) {
             q->skip[k] = 0;
             continue;
         }
+        if (rolled)
+            continue;
         if (s->on && seq_rand100(q) < s->chance) {
-            q->fired[k] = q->pos[k];
-            emit(k, q->pos[k], t);
+            if (!planned)
+                offset = seq_offset(q, k, t, step);
+            if (offset > 0) {
+                seq_wait(q, patterns, k, t, step, (uint32_t)offset, emit);
+            } else {
+                seq_first_hit(q, k, t, step, emit);
+            }
         }
     }
 }
@@ -84,6 +206,7 @@ static void seq_advance(seq_t *q, const pattern_t *patterns, seq_emit_t emit)
 {
     const pattern_t *p = &patterns[q->playing];
     uint32_t k;
+    q->looked = 0;
     q->count++;
     q->total++;
     if (q->count >= pattern_longest(p)) {
@@ -98,12 +221,13 @@ static void seq_advance(seq_t *q, const pattern_t *patterns, seq_emit_t emit)
             q->pos[k] = 0;
             q->skip[k] = 0;
             q->fired[k] = SEQ_NOT_FIRED;
+            q->ratchet[k].left = 0;
         }
     } else {
         for (k = 0; k < NTRK; k++)
             q->pos[k] = (uint8_t)((q->pos[k] + 1u) % p->track[k].length);
     }
-    seq_fire(q, p, emit);
+    seq_fire(q, patterns, p, emit);
 }
 
 /* the track's step nearest to now */
@@ -138,11 +262,34 @@ static void seq_block(seq_t *q, const pattern_t *patterns, uint32_t samples, seq
         return;
     if (q->run == SEQ_STARTING) {
         q->run = SEQ_RUNNING;
-        seq_fire(q, &patterns[q->playing], emit);
+        seq_fire(q, patterns, &patterns[q->playing], emit);
     }
-    q->sample_acc += samples;
-    while (q->sample_acc >= q->samples_per_step) {
-        q->sample_acc -= q->samples_per_step;
-        seq_advance(q, patterns, emit);
+    while (samples) {
+        uint32_t half = (q->samples_per_step + 1u) / 2u, to = q->looked ? q->samples_per_step : half;
+        uint32_t d = to > q->sample_acc ? to - q->sample_acc : 0u, k;
+        d = d < samples ? d : samples;
+        for (k = 0; k < NTRK; k++) {
+            if (q->waiting[k].t && q->waiting[k].wait < d)
+                d = q->waiting[k].wait;
+            if (q->ratchet[k].left && q->ratchet[k].wait < d)
+                d = q->ratchet[k].wait;
+        }
+        q->sample_acc += d;
+        samples -= d;
+        for (k = 0; k < NTRK; k++) {
+            if (q->waiting[k].t)
+                q->waiting[k].wait -= d;
+            if (q->ratchet[k].left)
+                q->ratchet[k].wait -= d;
+        }
+        if (!q->looked && q->sample_acc >= half) {
+            q->looked = 1;
+            seq_look_ahead(q, patterns, emit);
+        }
+        if (q->sample_acc >= q->samples_per_step) {
+            q->sample_acc -= q->samples_per_step;
+            seq_advance(q, patterns, emit);
+        }
+        seq_fire_due(q, patterns, emit);    /* after the grid: a step that fires on a ratchet's next hit ends the ratchet */
     }
 }

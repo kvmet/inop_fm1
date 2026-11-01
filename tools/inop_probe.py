@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Drive an FM-1 that runs an INOP_PROBE=1 build over its USB serial port. Standard library only; ffmpeg for `record`.
+"""Drive an FM-1 that runs an INOP_PROBE=1 build over its USB serial port. macOS, standard library only.
 
   tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/a.png' stat
   tools/inop_probe.py -f pattern.txt
@@ -12,17 +12,25 @@ A command is a device command (firmware/inop/probe.c), or one of these:
   wait MS
   shot FILE.png
   record FILE.wav SECONDS                     the master as the USB audio input sends it
+Device commands that load a pattern:
+  step PATTERN TRACK STEP FIELD VALUE         FIELD: 0 on, 1 note, 2 velocity, 3 length, 4 sound, 5 chance, 6 hits, 7 time
+  lock PATTERN TRACK STEP VALUE_ID VALUE
+  len|base|swing|human PATTERN TRACK VALUE
+  snd SOUND VALUE_ID VALUE
+  clear PATTERN
 Names from the firmware's enums (PV_FLT_CUT, G_DELAY_FB, B_LFO, E_K1, MOD_SRC_LFO1) stand for their numbers."""
 import argparse
+import ctypes
+import ctypes.util
 import glob
 import os
 import re
 import select
 import struct
-import subprocess
 import sys
 import termios
 import time
+import wave
 import zlib
 from pathlib import Path
 
@@ -30,6 +38,10 @@ ROOT = Path(__file__).resolve().parent.parent
 ENUM_FILES = ("firmware/inop/model.h", "firmware/inop/ui.c", "firmware/inop/voice_chain.c", "firmware/hal/fm1_input.h")
 PRESS_MS = 40                # longer than the release debounce, about 9 ms, and a main loop pass, 15 ms
 READ_S = 5.0
+RECORD_RATE = 44100.0
+RECORD_BYTES_PER_FRAME = 4
+RECORD_BUFFERS = 4
+RECORD_BUFFER_BYTES = 8192
 KNOB_ENC = ("E_SELECT", "E_K1", "E_K1_2", "E_K1_3", "E_K1_4", "E_ALGO")
 
 
@@ -134,19 +146,99 @@ def screenshot(port, path):
     write_png(path, frame)
 
 
-def audio_device():
-    listing = subprocess.run(["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-                             capture_output=True, text=True).stderr
-    audio = listing.split("audio devices", 1)[1]
-    m = re.search(r"\[(\d+)\] (Felucca|FM-1|Skiff)", audio)
-    if not m:
-        sys.exit("no FM-1 audio input:\n" + audio)
-    return m.group(1)
+class AudioBuffer(ctypes.Structure):
+    _fields_ = [("capacity", ctypes.c_uint32), ("data", ctypes.c_void_p), ("size", ctypes.c_uint32)]
+
+
+class StreamFormat(ctypes.Structure):
+    _fields_ = [("rate", ctypes.c_double), ("format_id", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("bytes_per_packet", ctypes.c_uint32),
+                ("frames_per_packet", ctypes.c_uint32), ("bytes_per_frame", ctypes.c_uint32), ("channels", ctypes.c_uint32),
+                ("bits", ctypes.c_uint32), ("reserved", ctypes.c_uint32)]
+
+
+class PropertyAddress(ctypes.Structure):
+    _fields_ = [("selector", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("element", ctypes.c_uint32)]
+
+
+def four_cc(text):
+    return struct.unpack(">I", text.encode())[0]
+
+
+def fm1_device_uid(audio, cf):
+    """the CFString UID of the FM-1's audio input"""
+    cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    audio.AudioObjectGetPropertyData.argtypes = [ctypes.c_uint32, ctypes.POINTER(PropertyAddress), ctypes.c_uint32, ctypes.c_void_p,
+                                                 ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+
+    def get(device, selector, out):
+        size = ctypes.c_uint32(ctypes.sizeof(out))
+        address = PropertyAddress(four_cc(selector), four_cc("glob"), 0)
+        status = audio.AudioObjectGetPropertyData(device, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(out))
+        if status:
+            sys.exit(f"CoreAudio error {status} reading {selector}")
+        return size.value
+
+    devices = (ctypes.c_uint32 * 64)()
+    count = get(1, "dev#", devices) // 4       # 1: the system object
+    for device in devices[:count]:
+        name, uid, text = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.create_string_buffer(256)
+        get(device, "lnam", name)
+        cf.CFStringGetCString(name, text, 256, 0x08000100)     # UTF-8
+        if re.match(r"Felucca|FM-1|Skiff", text.value.decode()):
+            get(device, "uid ", uid)
+            return uid
+    sys.exit("no FM-1 audio input: is an INOP_PROBE build installed?")
 
 
 def record(path, seconds):
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation", "-i", ":" + audio_device(),
-                    "-t", seconds, "-c:a", "pcm_s16le", path], check=True)
+    """CoreAudio directly: ffmpeg's avfoundation input drops buffers, which moves every later hit in the file"""
+    audio = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+    toolbox = ctypes.CDLL(ctypes.util.find_library("AudioToolbox"))
+    cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+    uid = fm1_device_uid(audio, cf)
+    frames, next_sample, gaps = [], [None], [0]
+    callback_type = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(AudioBuffer), ctypes.POINTER(ctypes.c_double),
+                                     ctypes.c_uint32, ctypes.c_void_p)
+
+    def on_buffer(_user, queue, buffer, start_time, _packets, _descriptions):
+        size = buffer.contents.size
+        if not size:                           # the queue stopping
+            return
+        sample_time = start_time[0]            # mSampleTime is the first field
+        if next_sample[0] is not None and abs(sample_time - next_sample[0]) >= 1:
+            gaps[0] += 1
+        next_sample[0] = sample_time + size / RECORD_BYTES_PER_FRAME
+        frames.append(ctypes.string_at(buffer.contents.data, size))
+        toolbox.AudioQueueEnqueueBuffer(queue, buffer, 0, None)
+
+    callback = callback_type(on_buffer)
+    wanted = StreamFormat(RECORD_RATE, four_cc("lpcm"), 12, RECORD_BYTES_PER_FRAME, 1, RECORD_BYTES_PER_FRAME, 2, 16, 0)   # 12: signed, packed
+    queue = ctypes.c_void_p()
+    toolbox.AudioQueueEnqueueBuffer.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+    toolbox.AudioQueueNewInput.argtypes = [ctypes.POINTER(StreamFormat), callback_type, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                           ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    toolbox.AudioQueueSetProperty.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]
+    toolbox.AudioQueueAllocateBuffer.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    toolbox.AudioQueueStart.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    toolbox.AudioQueueStop.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+    status = toolbox.AudioQueueNewInput(ctypes.byref(wanted), callback, None, None, None, 0, ctypes.byref(queue))
+    status = status or toolbox.AudioQueueSetProperty(queue, four_cc("aqcd"), ctypes.byref(uid), ctypes.sizeof(uid))
+    for _ in range(RECORD_BUFFERS):
+        buffer = ctypes.c_void_p()
+        status = status or toolbox.AudioQueueAllocateBuffer(queue, RECORD_BUFFER_BYTES, ctypes.byref(buffer))
+        status = status or toolbox.AudioQueueEnqueueBuffer(queue, buffer, 0, None)
+    status = status or toolbox.AudioQueueStart(queue, None)
+    if status:
+        sys.exit(f"CoreAudio error {status} starting the recording")
+    time.sleep(float(seconds))
+    toolbox.AudioQueueStop(queue, True)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(int(RECORD_RATE))
+        w.writeframes(b"".join(frames))
+    if gaps[0]:
+        sys.exit(f"the recording has {gaps[0]} gaps: its hit positions are not valid")
 
 
 def run(port, names, command):

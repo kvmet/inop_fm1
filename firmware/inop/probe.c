@@ -104,6 +104,13 @@ static void probe_report(void)
     probe_stat("usb_audio_underruns", (int32_t)uac.underruns);
     probe_stat("usb_audio_missed", (int32_t)uac.missed);
     probe_stat("usb_audio_stalls", (int32_t)uac.stalls);
+    probe_stat("usb_audio_overruns", (int32_t)uac.overruns);
+    probe_stat("usb_audio_packets", (int32_t)uac.pkts);
+    probe_stat("usb_audio_frames", (int32_t)uac.frames);
+    probe_stat("usb_audio_adj_up", (int32_t)uac.adj_up);
+    probe_stat("usb_audio_adj_down", (int32_t)uac.adj_down);
+    probe_stat("usb_audio_fill_lo", (int32_t)uac.fill_lo);
+    probe_stat("usb_audio_fill_hi", (int32_t)uac.fill_hi);
     probe_stat("ms", (int32_t)fm1_ms);
 }
 
@@ -131,6 +138,8 @@ static int probe_set_step(const int32_t *a)
     case 3: s->len = (uint8_t)a[4]; break;
     case 4: s->sound = (uint8_t)a[4]; break;
     case 5: s->chance = (uint8_t)a[4]; break;
+    case 6: s->hits = (uint8_t)clamp(a[4], 1, STEP_HITS_MAX); break;
+    case 7: s->time = (int8_t)clamp(a[4], -SEQ_TIME_MAX, SEQ_TIME_MAX); break;
     default: irq_restore(irq); return 0;
     }
     irq_restore(irq);
@@ -150,15 +159,21 @@ static int probe_set_lock(const int32_t *a)
     return !full;
 }
 
-static int probe_track_field(const int32_t *a, int is_length)
+enum { PROBE_LENGTH, PROBE_BASE, PROBE_SWING, PROBE_HUMAN };
+
+static int probe_track_field(const int32_t *a, int field)
 {
     track_pat_t *t;
     if (!probe_track(a[0], a[1], &t))
         return 0;
-    if (is_length)
+    if (field == PROBE_LENGTH)
         t->length = (uint8_t)clamp(a[2], 1, NSTEP);
-    else
+    else if (field == PROBE_BASE)
         t->base = (uint8_t)clamp(a[2], 0, NSOUND - 1);
+    else if (field == PROBE_SWING)
+        t->swing = (uint8_t)clamp(a[2], 0, SEQ_TIME_MAX);
+    else
+        t->human = (uint8_t)clamp(a[2], 0, SEQ_TIME_MAX);
     return 1;
 }
 
@@ -251,9 +266,13 @@ static int probe_exec(char *line)
     else if (probe_is(name, "lock") && n == 5u)
         return probe_set_lock(a);
     else if (probe_is(name, "len") && n == 3u)
-        return probe_track_field(a, 1);
+        return probe_track_field(a, PROBE_LENGTH);
     else if (probe_is(name, "base") && n == 3u)
-        return probe_track_field(a, 0);
+        return probe_track_field(a, PROBE_BASE);
+    else if (probe_is(name, "swing") && n == 3u)
+        return probe_track_field(a, PROBE_SWING);
+    else if (probe_is(name, "human") && n == 3u)
+        return probe_track_field(a, PROBE_HUMAN);
     else if (probe_is(name, "clear") && n == 1u)
         return probe_clear(a[0]);
     else if (probe_is(name, "snd") && n == 3u && a[0] >= 0 && a[0] < (int32_t)NSOUND && a[1] >= 0 && a[1] < (int32_t)PV_COUNT)

@@ -141,19 +141,21 @@ static int pkt_same(const pkt_t *a, const pkt_t *b)
 
 /* a track's trigger. A new note ends the track's held note, unless it is the same held note again: that one keeps sounding,
  * so a pattern can loop under a drone */
-static void voice_trigger_step(const pkt_t *p, uint32_t track, uint32_t samples_per_step)
+/* returns the steps the note spans. A hit's gate is its share of them, or the hits would pile up. A held note can't retrigger, so a ratchet on one takes a step */
+static uint32_t voice_trigger_step(const pkt_t *p, uint32_t track, uint32_t samples_per_step, uint32_t hits)
 {
-    uint32_t key = KEY_TRACK(track), i;
-    if (p->v[PV_LEN] != (int8_t)LEN_HOLD) {
+    uint32_t key = KEY_TRACK(track), i, held = p->v[PV_LEN] == (int8_t)LEN_HOLD, span = held ? 1u : (uint32_t)p->v[PV_LEN];
+    if (!held || hits > 1u) {
         voice_release_key(key);
-        voice_trigger(p, KEY_NONE, (uint32_t)p->v[PV_LEN] * samples_per_step / CTL);
-        return;
+        voice_trigger(p, KEY_NONE, span * samples_per_step / hits / CTL);
+        return span;
     }
     for (i = 0; i < NVOICE; i++)
         if (voices[i].active && voices[i].key == key && voices[i].chain.amp_env.stage < ENV_RELEASE && pkt_same(&voices[i].pkt, p))
-            return;
+            return span;
     voice_release_key(key);
     voice_trigger(p, key, 0);
+    return span;
 }
 
 /* a held note also ends when its track has no steps left to end it. One track per check: this runs inside the audio block */

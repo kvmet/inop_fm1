@@ -22,11 +22,11 @@ static volatile uint32_t keys_mask;      /* the keys that play notes */
 enum { METER_L, METER_R, METER_DELAY, METER_REVERB, METERS };
 static volatile uint32_t meter_peak[METERS];     /* the panel reads and clears these */
 
-static void seq_emit(uint32_t track, uint32_t step, const track_pat_t *t)
+static uint32_t seq_emit(uint32_t track, uint32_t step, const track_pat_t *t, uint32_t hits)
 {
     pkt_t p;
     packet_resolve(&p, sounds, t, step);
-    voice_trigger_step(&p, track, seq.samples_per_step);
+    return voice_trigger_step(&p, track, seq.samples_per_step, hits);
 }
 
 /* keys poll here so a press waits at most one block */
