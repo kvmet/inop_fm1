@@ -113,6 +113,17 @@ static int32_t voice_loudness(const voice_t *v)
     return voice_engine(&v->pkt) == ENGINE_PERC ? (amp * (v->engine.perc.loudness >> 3)) >> 12 : amp;
 }
 
+/* the voice whose waiting note has the lowest priority under prio, or 0. That note has not sounded, so a higher trigger can take its place */
+static voice_t *voice_waiting_below(uint32_t prio)
+{
+    voice_t *best = 0;
+    uint32_t i;
+    for (i = 0; i < NVOICE; i++)
+        if (voices[i].active && voices[i].has_next && voices[i].next.v[PV_PRIO] < (int32_t)prio && (!best || voices[i].next.v[PV_PRIO] < best->next.v[PV_PRIO]))
+            best = &voices[i];
+    return best;
+}
+
 static void voice_trigger(const pkt_t *p, uint32_t key, uint32_t hold_blocks)
 {
     uint32_t cost = voice_charge(p), prio = (uint32_t)clamp(p->v[PV_PRIO], 0, PRIOS - 1), total = 0, i;
@@ -139,8 +150,14 @@ static void voice_trigger(const pkt_t *p, uint32_t key, uint32_t hold_blocks)
         }
         victim = voice_victim(info, NVOICE, prio);
         if (victim < 0) {
+            voice_t *waiting = voice_waiting_below(prio);
             voices_dropped++;
-            return;
+            if (!waiting)
+                return;
+            waiting->has_next = 0;
+            total -= waiting->next_charge;
+            stolen = waiting;
+            continue;
         }
         voices_stolen += info[victim].rising || info[victim].loudness >= NEARLY_SILENT;
         voice_fade(&voices[victim]);

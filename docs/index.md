@@ -33,7 +33,7 @@ When a trigger needs budget, it frees voices in this order until it fits:
 2. Voices of lower priority, quietest first.
 3. Voices of equal priority, oldest first.
 
-A trigger never steals from a higher priority, even from a voice that is nearly silent or has not sounded yet. If it still does not fit, it does not sound, and the `D` counter rises.
+A trigger never steals from a higher priority, even from a voice that is nearly silent or has not sounded yet. If it finds nothing to steal, it takes the place of a note of lower priority that waits for a fade, and that note does not sound. If it still does not fit, it does not sound. The `D` counter rises for each note lost.
 
 A stolen voice fades out over one audio block, and the new voice starts in the next block. A trigger that steals can start up to 2.9 ms late.
 
@@ -365,7 +365,3 @@ python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
 - Multiband compression on the master.
 - A second envelope follower, for separate sidechains.
-
-## Open
-
-- Bug to find: with a NORM snare firing on every step, a kick at HIGH did not fire every time. A trigger of higher priority should take a lower one on any track, and a test of that rule on the voice pool passes.

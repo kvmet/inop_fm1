@@ -1287,6 +1287,147 @@ static void test_stereo_keeps_the_signal(void)
     }
 }
 
+/* five tracks can claim the budget with waiting notes in one step: a higher trigger still sounds, in place of one */
+static void test_voice_higher_trigger_takes_waiting_note(void)
+{
+    enum { COST = 1000, FIT = 3, HIGH_NOTE = 33, LOW_NOTE = 90, NORM_NOTE = 60 };
+    pkt_t p;
+    uint32_t saved_cost = voice_cost[ENGINE_FM], saved_budget = voice_budget, saved_dropped = voices_dropped, i, b, high = 0, low = 0, norm = 0, rendering = 0;
+    memset(voices, 0, sizeof voices);
+    voice_cost[ENGINE_FM] = COST;
+    voice_budget = COST * FIT;
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = ENGINE_FM;
+    p.v[PV_AMP_S] = 127;
+    p.v[PV_PRIO] = PRIO_NORMAL;
+    p.v[PV_NOTE] = NORM_NOTE;
+    for (i = 0; i < FIT; i++)
+        voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 300u; b++) {                        /* out of their attack */
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voices_render(l, r, d, w);
+    }
+    for (i = 0; i < FIT; i++)
+        voice_trigger(&p, KEY_NONE, 0);                 /* every voice now fades with a note waiting */
+    CHECK(voices_dropped == saved_dropped);
+    p.v[PV_NOTE] = NORM_NOTE + 1;
+    voice_trigger(&p, KEY_NONE, 0);                     /* equal priority takes nothing */
+    CHECK(voices_dropped == saved_dropped + 1u);
+    for (i = 0; i < NVOICE; i++)
+        if (voices[i].active && voices[i].has_next)
+            CHECK(voices[i].next.v[PV_NOTE] == NORM_NOTE);
+    p.v[PV_PRIO] = PRIO_LOW;
+    p.v[PV_NOTE] = LOW_NOTE;
+    voice_trigger(&p, KEY_NONE, 0);                     /* nor does lower */
+    CHECK(voices_dropped == saved_dropped + 2u);
+    p.v[PV_PRIO] = PRIO_HIGH;
+    p.v[PV_NOTE] = HIGH_NOTE;
+    voice_trigger(&p, KEY_NONE, 0);
+    CHECK(voices_dropped == saved_dropped + 3u);        /* the note it replaces does not sound */
+    for (b = 0; b < 4u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voices_render(l, r, d, w);
+    }
+    for (i = 0; i < NVOICE; i++) {
+        if (!voices[i].active)
+            continue;
+        rendering += voices[i].charge;
+        high += voices[i].pkt.v[PV_NOTE] == HIGH_NOTE;
+        low += voices[i].pkt.v[PV_NOTE] == LOW_NOTE;
+        norm += voices[i].pkt.v[PV_NOTE] == NORM_NOTE;
+    }
+    CHECK(high == 1u && low == 0u && norm == FIT - 1u);
+    CHECK(rendering <= voice_budget);
+    voice_cost[ENGINE_FM] = saved_cost;
+    voice_budget = saved_budget;
+    memset(voices, 0, sizeof voices);
+}
+
+/* the waiting note with the lowest priority goes first */
+static void test_voice_high_trigger_replaces_lowest_waiting(void)
+{
+    enum { LOW_NOTE = 90, NORM_NOTE = 60, HIGH_NOTE = 33 };
+    pkt_t p;
+    uint32_t saved_cost = voice_cost[ENGINE_FM], saved_budget = voice_budget, i, b, low = 0, norm = 0, high = 0;
+    memset(voices, 0, sizeof voices);
+    voice_cost[ENGINE_FM] = 1000;
+    voice_budget = 2000;
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = ENGINE_FM;
+    p.v[PV_AMP_S] = 127;
+    p.v[PV_PRIO] = PRIO_LOW;
+    for (i = 0; i < 2u; i++)
+        voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 300u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voices_render(l, r, d, w);
+    }
+    p.v[PV_NOTE] = LOW_NOTE;
+    voice_trigger(&p, KEY_NONE, 0);
+    p.v[PV_PRIO] = PRIO_NORMAL;
+    p.v[PV_NOTE] = NORM_NOTE;
+    voice_trigger(&p, KEY_NONE, 0);
+    p.v[PV_PRIO] = PRIO_HIGH;
+    p.v[PV_NOTE] = HIGH_NOTE;
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 4u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voices_render(l, r, d, w);
+    }
+    for (i = 0; i < NVOICE; i++)
+        if (voices[i].active) {
+            low += voices[i].pkt.v[PV_NOTE] == LOW_NOTE;
+            norm += voices[i].pkt.v[PV_NOTE] == NORM_NOTE;
+            high += voices[i].pkt.v[PV_NOTE] == HIGH_NOTE;
+        }
+    CHECK(low == 0u && norm == 1u && high == 1u);
+    voice_cost[ENGINE_FM] = saved_cost;
+    voice_budget = saved_budget;
+    memset(voices, 0, sizeof voices);
+}
+
+/* a costlier high trigger replaces as many waiting notes as it needs */
+static void test_voice_high_trigger_replaces_several(void)
+{
+    pkt_t p;
+    uint32_t saved_fm = voice_cost[ENGINE_FM], saved_wave = voice_cost[ENGINE_WAVE], saved_budget = voice_budget, i, b, total = 0, high = 0;
+    memset(voices, 0, sizeof voices);
+    voice_cost[ENGINE_FM] = 1000;
+    voice_cost[ENGINE_WAVE] = 2000;
+    voice_budget = 2000;
+    sound_init(&p, 0);
+    p.v[PV_ENGINE] = ENGINE_FM;
+    p.v[PV_AMP_S] = 127;
+    p.v[PV_PRIO] = PRIO_NORMAL;
+    for (i = 0; i < 2u; i++)
+        voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 300u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voices_render(l, r, d, w);
+    }
+    for (i = 0; i < 2u; i++)
+        voice_trigger(&p, KEY_NONE, 0);
+    p.v[PV_ENGINE] = ENGINE_WAVE;
+    p.v[PV_PRIO] = PRIO_HIGH;
+    p.v[PV_NOTE] = 33;
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 4u; b++) {
+        int32_t l[CTL] = {0}, r[CTL] = {0}, d[CTL] = {0}, w[CTL] = {0};
+        voices_render(l, r, d, w);
+    }
+    for (i = 0; i < NVOICE; i++)
+        if (voices[i].active) {
+            total += voices[i].charge;
+            high += voices[i].pkt.v[PV_NOTE] == 33;
+        }
+    CHECK(high == 1u);
+    CHECK(total <= voice_budget);
+    voice_cost[ENGINE_FM] = saved_fm;
+    voice_cost[ENGINE_WAVE] = saved_wave;
+    voice_budget = saved_budget;
+    memset(voices, 0, sizeof voices);
+}
+
 /* a note that waits for a fade counts at once: every voice rendering at once must fit */
 static void test_voice_budget_counts_fades(void)
 {
@@ -3933,6 +4074,9 @@ int main(void)
     test_delay_wraps();
     test_delay_width_0_matches_one_read();
     test_voice_budget_counts_fades();
+    test_voice_higher_trigger_takes_waiting_note();
+    test_voice_high_trigger_replaces_lowest_waiting();
+    test_voice_high_trigger_replaces_several();
     test_stereo_engines();
     test_stereo_swarm_sides();
     test_stereo_sends_and_follower();
