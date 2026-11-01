@@ -13,8 +13,9 @@
 #include "fm_engine.c"
 #include "perc_engine.c"
 #include "swarm_engine.c"
+#include "felucca_wave_tables.h"
+#include "wave_engine.c"
 #include "fx_sends.c"
-#include "phys_engine.c"
 #include "voice_steal.c"
 #define FM1_TICKS_PER_US 24u
 static uint32_t fm1_ticks(void) { return 0; }
@@ -405,7 +406,10 @@ static int32_t render_tone(chain_t *c, const pkt_t *p, int32_t a, int32_t *l, in
         x[i] = i & 1u ? -a : a;
         l[i] = r[i] = 0;
     }
-    return chain_render(c, p, x, l, r);
+    {
+        int32_t delay[CTL] = {0}, reverb[CTL] = {0};
+        return chain_render(c, p, x, l, r, delay, reverb);
+    }
 }
 
 static void test_envelope(void)
@@ -713,7 +717,7 @@ static void test_mod_opens_filter(void)
                 l[i] = r[i] = 0;
             }
             chain_mod(&c, &p, 0);
-            chain_render(&c, &p, x, l, r);
+            { int32_t delay[CTL] = {0}, reverb[CTL] = {0}; chain_render(&c, &p, x, l, r, delay, reverb); }
         }
         if (a)
             opened = peak(l);
@@ -818,7 +822,7 @@ static void test_reverb_tail(void)
     uint32_t b, i;
     memset(&v, 0, sizeof v);
     for (i = 0; i < CTL; i++)
-        in[i] = i & 1u ? -20000 : 20000;
+        in[i] = i & 8u ? -20000 : 20000;
     for (b = 0; b < 30000u; b++) {
         memset(l, 0, sizeof l);
         memset(r, 0, sizeof r);
@@ -833,93 +837,7 @@ static void test_reverb_tail(void)
     }
     CHECK(early > 0);                                   /* there is a tail */
     CHECK(diff > early / 10);                           /* the sides differ */
-    CHECK(late < early / 100);                          /* largest size, no damping: still decays */
-}
-
-static void phys_packet(pkt_t *p, int32_t model, int32_t note)
-{
-    sound_init(p, 0);
-    p->v[PV_ENGINE] = ENGINE_PHYS;
-    p->v[PV_E0] = (int8_t)model;
-    p->v[PV_E1] = 64;
-    p->v[PV_E2] = p->v[PV_E3] = 80;
-    p->v[PV_E4] = 20;
-    p->v[PV_E5] = 100;
-    p->v[PV_E7] = 10;
-    p->v[PV_NOTE] = (int8_t)note;
-    p->v[PV_VEL] = 127;
-}
-
-static void test_phys_rings_and_decays(void)
-{
-    static phys_voice_t v;
-    uint32_t model;
-    for (model = 0; model < PM_COUNT; model++) {
-        pkt_t p;
-        int32_t x[CTL], early = 0, late = 0;
-        uint32_t b, i;
-        phys_packet(&p, (int32_t)model, 48);
-        p.v[PV_E3] = 20;
-        phys_start(&v, &p, 12345);
-        for (b = 0; b < 3000u; b++) {
-            memset(x, 0, sizeof x);
-            phys_render(&v, &p, x, 0);
-            for (i = 0; i < CTL; i++) {
-                int32_t a = x[i] < 0 ? -x[i] : x[i];
-                CHECK(a <= 60000);                      /* stays inside what the chain accepts */
-                if (b < 100u && a > early)
-                    early = a;
-                if (b >= 2950u && a > late)
-                    late = a;
-            }
-        }
-        CHECK(early > 500);                             /* a strike is heard */
-        CHECK(late < early / 10);                       /* and dies away */
-    }
-}
-
-/* the string's period in samples: the lag where it best matches itself */
-static uint32_t phys_period(int32_t note, int32_t pitch)
-{
-    enum { SKIP = 100, BLOCKS = 300, MAX_LAG = 900 };
-    static phys_voice_t v;
-    static int32_t wave[BLOCKS * CTL];
-    pkt_t p;
-    int64_t best = 0;
-    uint32_t b, i, lag, best_lag = 0;
-    phys_packet(&p, PM_STRING, note);
-    p.v[PV_E1] = 32;
-    p.v[PV_E2] = 20;
-    p.v[PV_E3] = 110;
-    p.v[PV_E4] = 0;
-    p.v[PV_E7] = 0;
-    phys_start(&v, &p, 7);
-    for (b = 0; b < SKIP + BLOCKS; b++) {
-        int32_t x[CTL];
-        memset(x, 0, sizeof x);
-        phys_render(&v, &p, x, pitch);
-        if (b >= SKIP)
-            memcpy(&wave[(b - SKIP) * CTL], x, sizeof x);
-    }
-    for (lag = 40; lag < MAX_LAG; lag++) {
-        int64_t sum = 0;
-        for (i = 0; i + lag < BLOCKS * CTL; i += 3)
-            sum += (int64_t)wave[i] * wave[i + lag];
-        /* the fundamental is the first lag near the best match: its multiples match as well */
-        if (sum > best + best / 20) {
-            best = sum;
-            best_lag = lag;
-        }
-    }
-    return best_lag;
-}
-
-static void test_phys_pitch(void)
-{
-    uint32_t a4 = phys_period(69, 0), a3 = phys_period(57, 0), offset = phys_period(57, 12 * 16);
-    CHECK(a4 >= 98u && a4 <= 103u);                     /* note 69 is 440 Hz: 100 samples, as FM's note numbers */
-    CHECK(a3 >= 197u && a3 <= 204u);
-    CHECK(offset >= 98u && offset <= 103u);             /* the modulation offset moves pitch too */
+    CHECK(late < early / 10000);                        /* largest size, no damping: still decays past -40 dB, with no limit cycle */
 }
 
 static void perc_packet(pkt_t *p, int32_t mode, int32_t note, int32_t decay, int32_t spread, int32_t harm, int32_t fold, int32_t bend, int32_t noise, int32_t click)
@@ -1466,11 +1384,10 @@ static void swarm_samples(const pkt_t *p, int32_t *buf, uint32_t n, uint32_t ski
 #define SWARM_N 8192u
 static int32_t swarm_buf[SWARM_N];
 
-static double swarm_power_at(const pkt_t *p, uint32_t inc, int32_t timbre)
+static double buf_power_at(uint32_t inc)
 {
     double re = 0, im = 0;
     uint32_t ph = 0, n;
-    swarm_samples(p, swarm_buf, SWARM_N, 8u, timbre);
     for (n = 0; n < SWARM_N; n++) {
         double window = n < SWARM_N / 2u ? n : SWARM_N - n;
         re += window * swarm_buf[n] * SINE[ph >> 22];
@@ -1478,6 +1395,12 @@ static double swarm_power_at(const pkt_t *p, uint32_t inc, int32_t timbre)
         ph += inc;
     }
     return re * re + im * im;
+}
+
+static double swarm_power_at(const pkt_t *p, uint32_t inc, int32_t timbre)
+{
+    swarm_samples(p, swarm_buf, SWARM_N, 8u, timbre);
+    return buf_power_at(inc);
 }
 
 static double swarm_rms(const pkt_t *p)
@@ -1748,6 +1671,225 @@ static void test_swarm_level_bound(void)
     CHECK(worst >= SWARM_PEAK / 2);
 }
 
+static void wave_packet(pkt_t *p, int32_t table, int32_t note, int32_t wave, int32_t warp, int32_t pitch2, int32_t cross, int32_t osc2, int32_t detune, int32_t noise)
+{
+    sound_init(p, 0);
+    p->v[PV_ENGINE] = ENGINE_WAVE;
+    p->v[PV_E0] = (int8_t)table;
+    p->v[PV_NOTE] = (int8_t)note;
+    p->v[PV_E1] = (int8_t)wave;
+    p->v[PV_E2] = (int8_t)warp;
+    p->v[PV_E3] = (int8_t)pitch2;
+    p->v[PV_E4] = (int8_t)cross;
+    p->v[PV_E5] = (int8_t)osc2;
+    p->v[PV_E6] = (int8_t)detune;
+    p->v[PV_E7] = (int8_t)noise;
+}
+
+/* timbre_step: added to the timbre at every block */
+static void wave_samples(const pkt_t *p, int32_t timbre_step)
+{
+    static wave_voice_t W;
+    uint32_t i = 0;
+    int32_t timbre = 0;
+    wave_start(&W, p, 777u);
+    while (i < SWARM_N) {
+        int32_t out[CTL] = {0};
+        uint32_t s;
+        wave_render(&W, p, out, 0, timbre);
+        timbre += timbre_step;
+        for (s = 0; s < CTL && i < SWARM_N; s++)
+            swarm_buf[i++] = out[s];
+    }
+}
+
+static double wave_power_at(const pkt_t *p, uint32_t inc)
+{
+    wave_samples(p, 0);
+    return buf_power_at(inc);
+}
+
+#define WAVE_HARM 0
+#define WAVE_SYNC 2
+
+static void test_wave_pitch_and_position(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16), n, crossings = 0;
+    int32_t last = 0;
+    wave_packet(&p, WAVE_HARM, 69, 0, 0, 0, 0, 0, 0, 0);    /* a sine: A4 is 440 Hz */
+    wave_samples(&p, 0);
+    for (n = 0; n < SWARM_N; n++) {
+        crossings += last < 0 && swarm_buf[n] >= 0;
+        last = swarm_buf[n];
+    }
+    CHECK(crossings > 75u && crossings < 88u);
+    wave_packet(&p, WAVE_HARM, 57, 0, 0, 0, 0, 0, 0, 0);
+    q = p;
+    q.v[PV_E1] = 127;                                       /* WAVE adds harmonics */
+    CHECK(wave_power_at(&q, base * 3u) > wave_power_at(&p, base * 3u) * 100.0);
+    q.v[PV_E1] = 4;                                         /* between the first two frames: part of the second */
+    CHECK(wave_power_at(&q, base * 3u) > wave_power_at(&p, base * 3u) * 100.0);
+    wave_samples(&p, 64);                                   /* TIMBRE moves WAVE */
+    CHECK(buf_power_at(base * 3u) > wave_power_at(&p, base * 3u) * 100.0);
+}
+
+/* a jump of WAVE, either way, crosses one frame per block and never reads outside the two frames */
+static void test_wave_jump(void)
+{
+    static const int8_t FROM[2] = {0, 127}, TO[2] = {127, 0};
+    uint32_t k, b;
+    for (k = 0; k < 2u; k++) {
+        pkt_t p;
+        wave_voice_t W;
+        int32_t worst = 0, settled = wave_position(TO[k]);
+        wave_packet(&p, WAVE_HARM, 57, 0, 0, 0, 0, 0, 0, 0);
+        p.v[PV_E1] = FROM[k];
+        wave_start(&W, &p, 1u);
+        p.v[PV_E1] = TO[k];
+        for (b = 0; b < WAVE_FRAMES; b++) {
+            int32_t out[CTL] = {0};
+            wave_render(&W, &p, out, 0, 0);
+            worst = peak(out) > worst ? peak(out) : worst;
+        }
+        CHECK(W.position == settled);
+        CHECK(worst <= WAVE_PEAK);
+    }
+}
+
+/* each size's top harmonic stays under Nyquist, and the largest size that does is chosen */
+static void test_wave_sizes(void)
+{
+    static const uint8_t NOTES[] = {12, 36, 60, 72, 84, 96, 108, 120};
+    uint32_t i;
+    for (i = 0; i < NELEM(NOTES); i++) {
+        uint32_t inc = note_inc(NOTES[i] * 16), m = wave_size_index(inc);
+        uint64_t top = (uint64_t)inc << (WAVE_TOP_BITS - 2u - m);
+        CHECK(m == WAVE_SIZES - 1u || top < 0x80000000u);
+        CHECK(m == 0u || (top << 1) >= 0x80000000u);
+    }
+    CHECK(wave_size(WAVE_DATA[0][0], 1)[0] == WAVE_DATA[0][0][512]);
+    CHECK(wave_size(WAVE_DATA[0][0], 6) + 8 == WAVE_DATA[0][0] + sizeof WAVE_DATA[0][0] / sizeof(int16_t));
+}
+
+static void test_wave_band_limit(void)
+{
+    pkt_t p;
+    uint32_t base = note_inc(96 * 16), t;
+    for (t = 0; t < WAVE_TABLES; t++) {
+        double strongest = 0, alias;
+        uint32_t h;
+        wave_packet(&p, (int32_t)t, 96, t == WAVE_HARM ? 127 : 0, 0, 0, 0, 0, 0, 0);
+        wave_samples(&p, 0);
+        for (h = 1; h <= 8u; h++) {
+            double v = buf_power_at(base * h);
+            strongest = v > strongest ? v : strongest;
+        }
+        alias = buf_power_at(base * 22u);
+        printf("wave %u alias %.1f dB ", t, 10.0 * log10(alias / strongest + 1e-12));
+        CHECK(strongest > alias * 1000.0);
+    }
+    printf("\n");
+}
+
+/* frames join across blocks while WAVE moves: the wave bends no harder where blocks meet than elsewhere */
+static void test_wave_moves_smoothly(void)
+{
+    pkt_t p;
+    uint32_t n;
+    double at_joins = 0, elsewhere = 0;
+    wave_packet(&p, WAVE_HARM, 33, 0, 0, 0, 0, 0, 0, 0);
+    wave_samples(&p, 1);
+    for (n = 2u; n < 4000u; n++) {
+        double bend = abs(swarm_buf[n] - 2 * swarm_buf[n - 1u] + swarm_buf[n - 2u]);
+        if (n % CTL < 2u)
+            at_joins += bend / 2.0;
+        else
+            elsewhere += bend / ((double)CTL - 2.0);
+    }
+    printf("wave joins %.2f times the rest\n", at_joins / elsewhere);
+    CHECK(at_joins < elsewhere * 1.5);
+}
+
+static void test_wave_loudness(void)
+{
+    pkt_t p;
+    uint32_t t;
+    for (t = 0; t < WAVE_TABLES; t++) {
+        int32_t wave;
+        double lo = 1e30, hi = 0;
+        for (wave = 0; wave <= 127; wave += 17) {
+            double e = 0;
+            uint32_t n;
+            wave_packet(&p, (int32_t)t, 57, wave, 0, 0, 0, 0, 0, 0);
+            wave_samples(&p, 0);
+            for (n = 0; n < SWARM_N; n++)
+                e += (double)swarm_buf[n] * swarm_buf[n];
+            lo = e < lo ? e : lo;
+            hi = e > hi ? e : hi;
+        }
+        printf("wave %u spread %.1f dB ", t, 10.0 * log10(hi / lo));
+        CHECK(hi < lo * 8.0);
+    }
+    printf("\n");
+}
+
+static void test_wave_warp(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16);
+    wave_packet(&p, WAVE_HARM, 57, 0, 0, 0, 0, 0, 0, 0);
+    q = p;
+    q.v[PV_E2] = 100;
+    CHECK(wave_power_at(&q, base * 2u) > wave_power_at(&p, base * 2u) * 100.0);
+    CHECK(wave_power_at(&q, base) > wave_power_at(&q, base + (base >> 1)) * 100.0);   /* the same note */
+}
+
+static void test_wave_second_oscillator(void)
+{
+    pkt_t p, q;
+    uint32_t base = note_inc(57 * 16), fifth = note_inc(64 * 16);
+    wave_packet(&p, WAVE_HARM, 57, 0, 0, 7, 0, 127, 0, 0);
+    q = p;
+    q.v[PV_E5] = 0;
+    CHECK(wave_power_at(&p, fifth) > wave_power_at(&q, fifth) * 100.0);          /* PITCH2 and OSC2 */
+    CHECK(wave_power_at(&p, base) > wave_power_at(&p, base + (base >> 2)) * 100.0);
+    q = p;
+    q.v[PV_E6] = 127;                                                            /* DETUNE: up to 1 semitone */
+    CHECK(wave_power_at(&q, note_inc(65 * 16)) > wave_power_at(&p, note_inc(65 * 16)) * 100.0);
+    q = p;
+    q.v[PV_E5] = 0;
+    q.v[PV_E4] = -WAVE_CROSS_MAX;                                                /* ring: the sum and difference, no note */
+    CHECK(wave_power_at(&q, base + fifth) > wave_power_at(&q, base) * 100.0);
+    q.v[PV_E4] = WAVE_CROSS_MAX;                                                 /* FM: sidebands, and OSC2 stays silent */
+    CHECK(wave_power_at(&q, base + fifth) > wave_power_at(&p, base + fifth) * 100.0);
+    CHECK(wave_power_at(&p, base + fifth) * 100.0 < wave_power_at(&p, base));
+    q = p;
+    q.v[PV_E5] = 0;
+    q.v[PV_E7] = 127;                                                            /* NOISE */
+    p.v[PV_E5] = 0;
+    CHECK(wave_power_at(&q, base * 7u + (base >> 1)) > wave_power_at(&p, base * 7u + (base >> 1)) * 100.0);
+}
+
+static void test_wave_level_bound(void)
+{
+    static const int8_t V[2] = {0, 127};
+    uint32_t t, a, b, n;
+    int32_t worst = 0;
+    for (t = 0; t < WAVE_TABLES; t++)
+        for (a = 0; a < 2u; a++)
+            for (b = 0; b < 2u; b++) {
+                pkt_t p;
+                wave_packet(&p, (int32_t)t, 45, V[a], V[b], 0, a ? WAVE_CROSS_MAX : -WAVE_CROSS_MAX, 127, 127, V[b]);
+                wave_samples(&p, 0);
+                for (n = 0; n < SWARM_N; n++)
+                    worst = abs(swarm_buf[n]) > worst ? abs(swarm_buf[n]) : worst;
+            }
+    printf("wave peak %d\n", worst);
+    CHECK(worst <= WAVE_PEAK * 3);
+    CHECK(worst >= WAVE_PEAK / 2);
+}
+
 /* a slot reaches each engine's main value */
 static void test_timbre_destination(void)
 {
@@ -1780,6 +1922,18 @@ static void test_timbre_destination(void)
         voices_render(l, r, d, w);
     }
     CHECK(voices[0].engine.perc.fm_gain > 1000);
+    wave_packet(&p, WAVE_HARM, 45, 0, 0, 0, 0, 0, 0, 0);
+    p.v[PV_SLOT_SRC3] = MOD_SRC_VEL;
+    p.v[PV_SLOT_DST3] = MOD_DST_TIMBRE;
+    p.v[PV_SLOT_AMT3] = 127;
+    memset(voices, 0, sizeof voices);
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 8u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+    }
+    CHECK(voices[0].engine.wave.position > 0);
 }
 
 static uint32_t count_active_key(uint32_t key)
@@ -2004,7 +2158,7 @@ static void test_velocity_scales_peak(void)
 /* a note ends by its amp release, on every engine that takes note length */
 static void test_release_sets_note_end(void)
 {
-    static const int8_t ENGINE[][2] = {{ENGINE_FM, 0}, {ENGINE_FM, 3}, {ENGINE_FM, 7}, {ENGINE_PHYS, PM_MODAL}, {ENGINE_PHYS, PM_STRING}};
+    static const int8_t ENGINE[][2] = {{ENGINE_FM, 0}, {ENGINE_FM, 3}, {ENGINE_FM, 7}, {ENGINE_SWARM, 0}, {ENGINE_WAVE, 0}};
     uint32_t e;
     const uint32_t hold = 100u;
     for (e = 0; e < NELEM(ENGINE); e++) {
@@ -2077,21 +2231,67 @@ static void test_priority_across_voices(void)
     CHECK(voices_dropped == dropped + 1u);
 }
 
+/* a lower priority never costs a higher one a trigger, even one that has not sounded yet */
+static void test_low_priority_keeps_out(void)
+{
+    static const uint32_t KEEP[2] = {PRIO_NORMAL, PRIO_HIGH};
+    pkt_t p;
+    uint32_t i, b, dropped;
+    int32_t l[CTL], r[CTL], d[CTL], w[CTL];
+    voice_cost[0] = 100u;
+    voice_budget = 200u;
+    fm_packet(&p, 0, 45, 2, 3, 3, 0, 0, 0, 0);
+    memset(voices, 0, sizeof voices);
+    for (i = 0; i < 2u; i++) {
+        p.v[PV_PRIO] = (int8_t)KEEP[i];
+        voice_trigger(&p, KEY_NONE, 0);
+    }
+    p.v[PV_PRIO] = PRIO_XLOW;
+    dropped = voices_dropped;
+    voice_trigger(&p, KEY_NONE, 0);                     /* in the same block: neither has rendered */
+    CHECK(!voice_fading(&voices[0]) && !voice_fading(&voices[1]));
+    CHECK(voices_dropped == dropped + 1u);              /* and the lost trigger is counted */
+    p.v[PV_AMP_A] = 100;                                /* a slow attack starts quiet too */
+    memset(voices, 0, sizeof voices);
+    p.v[PV_PRIO] = PRIO_NORMAL;
+    voice_trigger(&p, KEY_NONE, 0);
+    voice_trigger(&p, KEY_NONE, 0);
+    for (b = 0; b < 4u; b++) {
+        for (i = 0; i < CTL; i++)
+            l[i] = r[i] = d[i] = w[i] = 0;
+        voices_render(l, r, d, w);
+    }
+    p.v[PV_PRIO] = PRIO_XLOW;
+    voice_trigger(&p, KEY_NONE, 0);
+    CHECK(!voice_fading(&voices[0]) && !voice_fading(&voices[1]));
+    p.v[PV_PRIO] = PRIO_HIGH;                           /* a higher one still gets in, and that lost note is counted */
+    dropped = voices_stolen;
+    voice_trigger(&p, KEY_NONE, 0);
+    CHECK(voice_fading(&voices[0]) && voices_stolen == dropped + 1u);
+    voice_budget = 0xFFFFFFFFu;
+    voice_cost[0] = 0u;
+    memset(voices, 0, sizeof voices);
+}
+
 static void test_steal_order(void)
 {
     steal_t v[3];
     memset(v, 0, sizeof v);
-    v[0] = (steal_t){1, PRIO_NORMAL, 20000, 1};
-    v[1] = (steal_t){1, PRIO_NORMAL, 10000, 2};
-    v[2] = (steal_t){1, PRIO_NORMAL, 30000, 3};
+    v[0] = (steal_t){1, PRIO_NORMAL, 20000, 1, 0};
+    v[1] = (steal_t){1, PRIO_NORMAL, 10000, 2, 0};
+    v[2] = (steal_t){1, PRIO_NORMAL, 30000, 3, 0};
     CHECK(voice_victim(v, 3, PRIO_NORMAL) == 0);        /* equal priority: oldest, not quietest */
     CHECK(voice_victim(v, 3, PRIO_LOW) == -1);          /* never from a higher priority */
     CHECK(voice_victim(v, 3, PRIO_HIGH) == 1);          /* lower priority: quietest */
     v[2].prio = PRIO_LOW;
     CHECK(voice_victim(v, 3, PRIO_HIGH) == 2);          /* the lowest priority goes first */
     CHECK(voice_victim(v, 3, PRIO_NORMAL) == 2);
-    v[1] = (steal_t){1, PRIO_HIGH, 100, 2};
-    CHECK(voice_victim(v, 3, PRIO_LOW) == 1);           /* nearly silent goes first, whatever its priority */
+    v[1] = (steal_t){1, PRIO_HIGH, 100, 2, 0};
+    CHECK(voice_victim(v, 3, PRIO_LOW) == 2);           /* nearly silent is still safe from a lower priority */
+    CHECK(voice_victim(v, 3, PRIO_HIGH) == 1);          /* it goes first at its own priority */
+    v[1].rising = 1;
+    CHECK(voice_victim(v, 3, PRIO_XXHIGH) == 2);        /* quiet in its attack has not ended: lower priorities go by rank */
+    v[1].rising = 0;
     v[1].stealable = 0;
     CHECK(voice_victim(v, 3, PRIO_LOW) == 2);           /* a voice already fading cannot be taken twice */
 }
@@ -2153,8 +2353,6 @@ int main(void)
     test_delay_decays_at_full_feedback();
     test_delay_time_glides();
     test_reverb_tail();
-    test_phys_rings_and_decays();
-    test_phys_pitch();
     test_perc_pitch();
     test_perc_bend();
     test_perc_spread_and_harm();
@@ -2186,12 +2384,22 @@ int main(void)
     test_swarm_charge();
     test_swarm_drift();
     test_swarm_level_bound();
+    test_wave_pitch_and_position();
+    test_wave_jump();
+    test_wave_sizes();
+    test_wave_band_limit();
+    test_wave_moves_smoothly();
+    test_wave_loudness();
+    test_wave_warp();
+    test_wave_second_oscillator();
+    test_wave_level_bound();
     test_timbre_destination();
     test_hold();
     test_perc_amp_envelope();
     test_velocity_scales_peak();
     test_release_sets_note_end();
     test_envelope_times();
+    test_low_priority_keeps_out();
     test_steal_order();
     test_priority_across_voices();
     test_master_bound();

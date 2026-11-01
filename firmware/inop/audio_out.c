@@ -66,12 +66,14 @@ static void audio_block(int32_t *out)
     seq_block(&seq, patterns, CTL, seq_emit);
     voices_hold_service(&patterns[seq.playing]);
     voices_render(l, r, delay_bus, reverb_bus);
-    delay_block(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);
-    reverb_block(&reverb_fx, reverb_bus, l, r, globals[G_REVERB_SIZE], globals[G_REVERB_DAMP]);
+    AUDIO_FAR(delay_block)(&delay_fx, delay_bus, l, r, (uint32_t)globals[G_DELAY_TIME] * seq.samples_per_step, globals[G_DELAY_FB]);
+    AUDIO_FAR(reverb_block)(&reverb_fx, reverb_bus, l, r, globals[G_REVERB_SIZE], globals[G_REVERB_DAMP]);
     for (i = 0; i < CTL; i++) {
         l[i] = ((l[i] >> 2) * (int32_t)master_q12) >> 10;
         r[i] = ((r[i] >> 2) * (int32_t)master_q12) >> 10;
-        master_sample(&master, &l[i], &r[i]);
+    }
+    AUDIO_FAR(master_block)(&master, l, r);
+    for (i = 0; i < CTL; i++) {
         out[2u * i] = l[i] * (1 << OUT_SHIFT);
         out[2u * i + 1u] = r[i] * (1 << OUT_SHIFT);
         peak[METER_L] = abs_max(peak[METER_L], l[i]);

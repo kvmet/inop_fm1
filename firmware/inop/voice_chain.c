@@ -43,7 +43,7 @@ typedef struct {
 
 static uint32_t mod_rng = 0x2F6E2B1u;
 
-static int32_t mod_random(void)
+static AUDIO_INLINE int32_t mod_random(void)
 {
     mod_rng ^= mod_rng << 13;
     mod_rng ^= mod_rng >> 17;
@@ -74,13 +74,13 @@ static void env_start(env_t *e, int32_t a, int32_t d, int32_t sus, int32_t r)
     e->stage = ENV_ATTACK;
 }
 
-static void env_release(env_t *e)
+static AUDIO_INLINE void env_release(env_t *e)
 {
     if (e->stage < ENV_RELEASE)
         e->stage = ENV_RELEASE;
 }
 
-static int32_t env_toward(int32_t env, int32_t target, int32_t k)
+static AUDIO_INLINE int32_t env_toward(int32_t env, int32_t target, int32_t k)
 {
     int32_t move = (((target - env) >> 12) * k) >> 4;    /* k reaches 65536: a wider product overflows */
     if (!move)
@@ -88,7 +88,7 @@ static int32_t env_toward(int32_t env, int32_t target, int32_t k)
     return env + move;
 }
 
-static void env_block(env_t *e)
+static AUDIO_INLINE void env_block(env_t *e)
 {
     switch (e->stage) {
     case ENV_ATTACK:
@@ -187,7 +187,7 @@ static const uint16_t SEMI_Q12[12] = {4096, 4340, 4598, 4871, 5161, 5468, 5793, 
 #define NOTE0_INC 49765u         /* phase per sample at note 0 (8.18 Hz), >> 4 */
 
 /* phase per sample. pitch: 1/16 semitones above note 0 */
-static uint32_t note_inc(int32_t pitch)
+static AUDIO_INLINE uint32_t note_inc(int32_t pitch)
 {
     uint32_t q = (uint32_t)clamp(pitch, 0, 127 * 16 + 15), semi = q >> 4;
     uint32_t v = ((NOTE0_INC * SEMI_Q12[semi % 12u]) >> 8) << (semi / 12u);
@@ -211,7 +211,7 @@ static void lfo_start(lfo_t *l, int32_t shape, int32_t mode, int32_t rate, int32
 }
 
 /* -32767..32767. clock counts render blocks: a free-running LFO reads its phase from it, so all its voices agree */
-static int32_t lfo_block(lfo_t *l, uint32_t clock)
+static AUDIO_INLINE int32_t lfo_block(lfo_t *l, uint32_t clock)
 {
     uint32_t prev = l->phase, q;
     int32_t x;
@@ -235,7 +235,7 @@ static int32_t lfo_block(lfo_t *l, uint32_t clock)
     return x;
 }
 
-static void chain_filter_coef(chain_t *c, int32_t cut_q8, int32_t res_q8)
+static AUDIO_INLINE void chain_filter_coef(chain_t *c, int32_t cut_q8, int32_t res_q8)
 {
     int32_t i, g, den;
     cut_q8 = clamp(cut_q8, 0, 127 << 8);
@@ -256,7 +256,7 @@ static void chain_filter_coef(chain_t *c, int32_t cut_q8, int32_t res_q8)
 }
 
 /* the note is the packet's: key tracking follows the pitch the trigger asked for */
-static void chain_filter_update(chain_t *c, const pkt_t *p)
+static AUDIO_INLINE void chain_filter_update(chain_t *c, const pkt_t *p)
 {
     int32_t key = clamp(p->v[PV_FLT_KEY], 0, 127) * (p->v[PV_NOTE] - 60) * 2;
     chain_filter_coef(c, (clamp(p->v[PV_FLT_CUT], 0, 127) << 8) + key + c->off[MOD_DST_CUT],
@@ -281,14 +281,14 @@ static void chain_start(chain_t *c, const pkt_t *p)
     c->shape_level = c->shape_gain = 0;
 }
 
-static void chain_release(chain_t *c)
+static AUDIO_INLINE void chain_release(chain_t *c)
 {
     env_release(&c->amp_env);
     env_release(&c->mod_env);
 }
 
 /* runs the sources and the slots for one block; the amount at 127 and a full source move a value by 127 */
-static void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
+static AUDIO_INLINE void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
 {
     int32_t src[MOD_SRCS];
     uint32_t i;
@@ -306,7 +306,7 @@ static void chain_mod(chain_t *c, const pkt_t *p, uint32_t clock)
     }
 }
 
-static inline int32_t softclip(int32_t x)
+static AUDIO_INLINE int32_t softclip(int32_t x)
 {
     int32_t a = x < 0 ? -x : x, i = a >> 8, y;
     if (i >= 256)
@@ -317,7 +317,7 @@ static inline int32_t softclip(int32_t x)
 }
 
 /* folds any value into -32768..32767 in one step */
-static inline int32_t wavefold(int32_t x)
+static AUDIO_INLINE int32_t wavefold(int32_t x)
 {
     uint32_t u = ((uint32_t)x + 32768u) & 0x1FFFFu;
     return u < 65536u ? (int32_t)u - 32768 : 98303 - (int32_t)u;
@@ -326,7 +326,7 @@ static inline int32_t wavefold(int32_t x)
 /* folding alone would hold the level at full scale until the driven signal falls under it. This gain follows the input's
  * level until then. Below that point the folded signal falls by itself, and 1 / drive scales it back to the input's level.
  * The follower's 47 ms is long enough that a low note's own cycle does not move the gain */
-static void chain_shape(chain_t *c, int32_t *x, int32_t shape)
+static AUDIO_INLINE void chain_shape(chain_t *c, int32_t *x, int32_t shape)
 {
     int32_t drive_q4 = 16 + shape * shape * 240 / 16129;     /* 127 drives by 16 */
     int32_t floor = 32768 * 16 / drive_q4, peak = 0, target, ramp = c->shape_gain * (1 << CTL_BITS);
@@ -347,7 +347,7 @@ static void chain_shape(chain_t *c, int32_t *x, int32_t shape)
 }
 
 /* cheap effects in place; each is skipped at 0 */
-static void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
+static AUDIO_INLINE void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
 {
     int32_t drive = clamp(p->v[PV_DRIVE] + (c->off[MOD_DST_DRIVE] >> 8), 0, 127);
     int32_t shape = clamp(p->v[PV_SHAPER] + (c->off[MOD_DST_SHAPER] >> 8), 0, 127);
@@ -377,13 +377,13 @@ static void chain_effects(chain_t *c, const pkt_t *p, int32_t *x)
     }
 }
 
-static void chain_filter(chain_t *c, uint32_t type, int32_t *x)
+static AUDIO_INLINE void chain_filter(chain_t *c, uint32_t type, int32_t *x)
 {
     uint32_t i;
     if (type == FLT_OFF)
         return;
     for (i = 0; i < CTL; i++) {
-        int32_t in = clamp(x[i], -60000, 60000), v3 = in - c->ic2;
+        int32_t in = x[i], v3 = in - c->ic2;
         int32_t v1 = (c->a1 * c->ic1 + c->a2 * v3) >> 13;
         int32_t v2 = c->ic2 + ((c->a2 * c->ic1 + c->a3 * v3) >> 13);
         c->ic1 = clamp(2 * v1 - c->ic1, -150000, 150000);
@@ -392,13 +392,14 @@ static void chain_filter(chain_t *c, uint32_t type, int32_t *x)
     }
 }
 
-/* adds one block to l and r; x is the engine's block and is overwritten. 0 when the envelope has ended */
-static int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int32_t *r)
+/* adds one block to l, r and the send buses; x is the engine's block and is overwritten. 0 when the envelope has ended */
+static AUDIO_INLINE int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int32_t *r, int32_t *delay_bus, int32_t *reverb_bus)
 {
     int32_t vel = clamp(p->v[PV_VEL], 0, 127);
     int32_t lvl = LEVEL_Q12[clamp(p->v[PV_LEVEL] + (c->off[MOD_DST_LEVEL] >> 8), 0, 127)] * vel * vel / (127 * 127);  /* velocity: 64 is -12 dB */
     int32_t pan = clamp(p->v[PV_PAN] + (c->off[MOD_DST_PAN] >> 8), -63, 63);
     int32_t gl = 4096 - (pan > 0 ? pan * 4096 / 63 : 0), gr = 4096 + (pan < 0 ? pan * 4096 / 63 : 0);
+    int32_t delay_q8 = clamp(p->v[PV_SEND_DELAY], 0, 127) * 2, reverb_q8 = clamp(p->v[PV_SEND_REVERB], 0, 127) * 2;
     int32_t amp, target_l, target_r, ramp_l, ramp_r;
     uint32_t i;
     chain_effects(c, p, x);
@@ -415,9 +416,18 @@ static int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int3
         int32_t y = clamp(x[i], -60000, 60000);
         ramp_l += target_l - c->gain_l;
         ramp_r += target_r - c->gain_r;
-        l[i] += (y * (ramp_l >> (CTL_BITS + 4))) >> 11;
-        r[i] += (y * (ramp_r >> (CTL_BITS + 4))) >> 11;
+        x[i] = (y * (ramp_l >> (CTL_BITS + 4))) >> 11;
+        y = (y * (ramp_r >> (CTL_BITS + 4))) >> 11;
+        l[i] += x[i];
+        r[i] += y;
+        x[i] = (x[i] + y) >> 1;
     }
+    if (delay_q8)
+        for (i = 0; i < CTL; i++)
+            delay_bus[i] += (x[i] * delay_q8) >> 8;
+    if (reverb_q8)
+        for (i = 0; i < CTL; i++)
+            reverb_bus[i] += (x[i] * reverb_q8) >> 8;
     c->gain_l = target_l;
     c->gain_r = target_r;
     return c->amp_env.stage != ENV_DONE;
@@ -426,7 +436,7 @@ static int chain_render(chain_t *c, const pkt_t *p, int32_t *x, int32_t *l, int3
 /* the master: limiter, then soft clip, then the ceiling */
 typedef struct { int32_t env; } master_t;
 
-static void master_sample(master_t *m, int32_t *l, int32_t *r)
+static AUDIO_INLINE void master_sample(master_t *m, int32_t *l, int32_t *r)
 {
     int32_t al = *l < 0 ? -*l : *l, ar = *r < 0 ? -*r : *r, a = al > ar ? al : ar;
     if (a > m->env)
@@ -440,6 +450,13 @@ static void master_sample(master_t *m, int32_t *l, int32_t *r)
     }
     *l = clamp(softclip(*l), -MASTER_CEILING, MASTER_CEILING);
     *r = clamp(softclip(*r), -MASTER_CEILING, MASTER_CEILING);
+}
+
+AUDIO_RAM static void master_block(master_t *m, int32_t *l, int32_t *r)
+{
+    uint32_t i;
+    for (i = 0; i < CTL; i++)
+        master_sample(m, &l[i], &r[i]);
 }
 
 /* a peak as a bar of 0..w px: 6 dB per w/8 px, full at MASTER_CEILING */

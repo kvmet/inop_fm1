@@ -30,7 +30,7 @@ typedef struct {
     int32_t dc;                  /* Q8 */
 } fm_voice_t;
 
-static uint32_t fm_alg(int32_t v) { return (uint32_t)clamp(v, 0, FM_ALGS - 1); }
+static AUDIO_INLINE uint32_t fm_alg(int32_t v) { return (uint32_t)clamp(v, 0, FM_ALGS - 1); }
 
 static int fm_is_carrier(uint32_t alg, uint32_t op)
 {
@@ -42,7 +42,7 @@ static int fm_is_carrier(uint32_t alg, uint32_t op)
 }
 
 /* a knob's fine control sits at its low end */
-static int32_t fm_squared(int32_t v, int32_t full)
+static AUDIO_INLINE int32_t fm_squared(int32_t v, int32_t full)
 {
     int32_t c = clamp(v, 0, 127);
     return c * c * full / 16129;
@@ -64,19 +64,26 @@ static void fm_start(fm_voice_t *f, const pkt_t *p)
 }
 
 /* phase per sample, or 0 over Nyquist. ratio: a knob value. detune: Q16 */
-static uint32_t fm_op_inc(uint32_t base, int32_t ratio, int32_t detune)
+static AUDIO_INLINE uint32_t fm_op_inc(uint32_t base, int32_t ratio, int32_t detune)
 {
     uint64_t r = ((uint64_t)base * FM_RATIO_Q8[clamp(ratio, 0, FM_RATIOS - 1)]) >> 8;
     r = (r * (uint32_t)(65536 + detune)) >> 16;
     return r >= 0x80000000u ? 0u : (uint32_t)r;
 }
 
+#define FM_DEPTH_STEP 8u         /* samples between index steps: the index holds still between them, so it needs no buffer of its own */
 #define FM_SIN(ph, m) SINE[((ph) + (uint32_t)(m) * (1u << FM_SHIFT)) >> 22]
 #define FM_M(x, d) (((x) * (d)) >> 15)
 /* one loop per algorithm: a routing lookup per operator per sample would cost more than the operators */
 #define FM_LOOP(...) \
     for (s = 0; s < CTL; s++) { \
-        int32_t da = depth_a[s], db = depth_b[s], b2 = FM_SIN(pb2, FM_M((h1 + h2) >> 1, fb)); \
+        int32_t da, db, b2 = FM_SIN(pb2, FM_M((h1 + h2) >> 1, fb)); \
+        if (!(s & (FM_DEPTH_STEP - 1u))) { \
+            depth_a += step_a; \
+            depth_b += step_b; \
+        } \
+        da = depth_a; \
+        db = depth_b; \
         h2 = h1; \
         h1 = b2; \
         __VA_ARGS__ \
@@ -87,22 +94,16 @@ static uint32_t fm_op_inc(uint32_t base, int32_t ratio, int32_t detune)
     }
 
 /* adds one block to out. pitch: an offset in 1/16 semitones. mod_q15: the MOD envelope. timbre: an offset to both indexes */
-static void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, int32_t pitch, int32_t mod_q15, int32_t timbre)
+static AUDIO_INLINE void fm_render(fm_voice_t *f, const pkt_t *p, int32_t *out, int32_t pitch, int32_t mod_q15, int32_t timbre)
 {
-    int32_t y[CTL], depth_a[CTL], depth_b[CTL];
+    int32_t y[CTL];
     int32_t target_a = (fm_squared(p->v[PV_E4] + timbre, 32767) * mod_q15) >> 15, target_b = (fm_squared(p->v[PV_E5] + timbre, 32767) * mod_q15) >> 15;
-    int32_t ramp_a = f->gain_a * (1 << CTL_BITS), ramp_b = f->gain_b * (1 << CTL_BITS);
+    int32_t depth_a = f->gain_a, depth_b = f->gain_b, step_a = (target_a - depth_a) / (int32_t)(CTL / FM_DEPTH_STEP), step_b = (target_b - depth_b) / (int32_t)(CTL / FM_DEPTH_STEP);
     int32_t h1 = f->held[0], h2 = f->held[1], fb = f->feedback, detune = fm_squared(p->v[PV_E7], 16384);   /* 1/4 is 1 semitone */
     uint32_t base = note_inc(p->v[PV_NOTE] * 16 + pitch), s;
     uint32_t ic = fm_op_inc(base, p->v[PV_E1], 0), ia = fm_op_inc(base, p->v[PV_E2], detune);
     uint32_t ib1 = fm_op_inc(base, p->v[PV_E3], -detune), ib2 = fm_op_inc(base, p->v[PV_E3], detune / 2);
     uint32_t pc = f->phase[FM_C], pa = f->phase[FM_A], pb1 = f->phase[FM_B1], pb2 = f->phase[FM_B2];
-    for (s = 0; s < CTL; s++) {
-        ramp_a += target_a - f->gain_a;
-        ramp_b += target_b - f->gain_b;
-        depth_a[s] = ramp_a >> CTL_BITS;
-        depth_b[s] = ramp_b >> CTL_BITS;
-    }
     f->gain_a = target_a;
     f->gain_b = target_b;
     switch (fm_alg(p->v[PV_E0])) {

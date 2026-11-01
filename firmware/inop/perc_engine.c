@@ -32,10 +32,10 @@ static const uint16_t PERC_RATIOS[PERC_MODES][PERC_PARTIALS] = {
     {256, 380, 461, 652, 673, 998},
 };
 
-static uint32_t perc_mode(int32_t mode) { return (uint32_t)clamp(mode, 0, 127) % PERC_MODES; }
+static AUDIO_INLINE uint32_t perc_mode(int32_t mode) { return (uint32_t)clamp(mode, 0, 127) % PERC_MODES; }
 
 /* spread 0 is unison, and 64 is the mode's table */
-static uint32_t perc_ratio_q8(int32_t mode, int32_t spread, uint32_t partial)
+static AUDIO_INLINE uint32_t perc_ratio_q8(int32_t mode, int32_t spread, uint32_t partial)
 {
     return 256u + (PERC_RATIOS[perc_mode(mode)][partial] - 256u) * (uint32_t)clamp(spread, 0, 127) / 64u;
 }
@@ -60,7 +60,7 @@ static int32_t perc_decay_k(uint32_t blocks)
     return clamp(65536 - (int32_t)(452984u / blocks), 0, 65535);     /* 452984 is 6.91 in Q16: ln(1000) */
 }
 
-static inline int32_t perc_fall(int32_t env, int32_t floor, int32_t k)
+static AUDIO_INLINE int32_t perc_fall(int32_t env, int32_t floor, int32_t k)
 {
     int32_t over = env - floor;
     return over < PERC_ENV_END ? floor : floor + (((over >> 8) * k) >> 8);
@@ -97,7 +97,7 @@ static void perc_start(perc_voice_t *S, const pkt_t *p, uint32_t seed)
 }
 
 /* adds one block to out; 0 when every partial and the noise have ended. pitch: an offset in 1/16 semitones. timbre: an offset to FM */
-static int perc_render(perc_voice_t *S, const pkt_t *p, int32_t *out, int32_t pitch, int32_t timbre)
+static AUDIO_INLINE int perc_render(perc_voice_t *S, const pkt_t *p, int32_t *out, int32_t pitch, int32_t timbre)
 {
     int32_t x[CTL], mod[CTL], depth[CTL];
     int32_t mode = p->v[PV_E0], spread = p->v[PV_E2], total = 0, ramp, target, fm_on;

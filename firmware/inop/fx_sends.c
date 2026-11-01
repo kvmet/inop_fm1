@@ -7,12 +7,9 @@
 #define DELAY_MASK (DELAY_LEN - 1u)
 #define DELAY_DAMP 6000          /* of 32768: the repeats lose their top */
 #define DELAY_FB_MAX 31000       /* below unity at full feedback, so repeats always decay */
-#define REV_COMBS 4u
-#define REV_APS 2u
-#define REV_SPREAD 23u           /* the right allpasses' extra length, for width */
-
-static const uint16_t REV_COMB_LEN[REV_COMBS] = {1116, 1188, 1277, 1356};
-static const uint16_t REV_AP_LEN[REV_APS] = {225, 556};
+#define REV_BUF_LEN 4096u        /* a power of 2: masked. Holds every line of the loop, at 22 kHz */
+#define REV_MASK (REV_BUF_LEN - 1u)
+#define REV_INPUT_Q15 22000
 
 typedef struct {
     int16_t delay[DELAY_LEN];
@@ -20,18 +17,18 @@ typedef struct {
     int32_t delay_lp;
 } delay_t;
 
+/* the delay lines share one circular buffer and one moving position, so a read is an add and a mask, with no wrap to check */
 typedef struct {
-    int16_t comb[REV_COMBS][1356];
-    int16_t ap[2][REV_APS][556 + REV_SPREAD];
-    uint16_t comb_i[REV_COMBS], ap_i[2][REV_APS];
-    int32_t comb_lp[REV_COMBS];
+    int16_t buf[REV_BUF_LEN];
+    uint32_t w;
+    int32_t feedback, lp[2], last_l, last_r;
 } reverb_t;
 
 static delay_t delay_fx;
 static reverb_t reverb_fx POOL_SECTION;
 
 /* adds the repeats to l and r. samples: the delay time; it glides there, so a change bends pitch and does not click */
-static void delay_block(delay_t *d, const int32_t *in, int32_t *l, int32_t *r, uint32_t samples, int32_t feedback)
+AUDIO_RAM static void delay_block(delay_t *d, const int32_t *in, int32_t *l, int32_t *r, uint32_t samples, int32_t feedback)
 {
     int32_t fb = clamp(feedback, 0, 127) * DELAY_FB_MAX / 127;
     uint32_t i;
@@ -50,37 +47,77 @@ static void delay_block(delay_t *d, const int32_t *in, int32_t *l, int32_t *r, u
     }
 }
 
-static int32_t reverb_ap(reverb_t *v, uint32_t side, int32_t a)
+/* a delay line that starts at base and holds len samples: at is the moving position */
+#define REV_READ(v, at, base, len) ((v)->buf[((at) + (base) + (len)) & REV_MASK])
+#define REV_WRITE(v, at, base, x) ((v)->buf[((at) + (base)) & REV_MASK] = (int16_t)clamp(x, -32768, 32767))
+
+/* a true allpass at coefficient 1/2 */
+static AUDIO_INLINE int32_t reverb_ap(reverb_t *v, uint32_t at, uint32_t base, uint32_t len, int32_t a)
 {
-    uint32_t k;
-    for (k = 0; k < REV_APS; k++) {
-        uint16_t *pos = &v->ap_i[side][k];
-        uint32_t len = REV_AP_LEN[k] + side * REV_SPREAD;
-        int32_t o = v->ap[side][k][*pos];
-        v->ap[side][k][*pos] = (int16_t)clamp(a + (o >> 1), -32768, 32767);
-        a = o - a;
-        if (++*pos >= len)
-            *pos = 0;
-    }
-    return a;
+    int32_t o = REV_READ(v, at, base, len), x = a + (o >> 1);
+    REV_WRITE(v, at, base, x);
+    return o - (x >> 1);
 }
 
-/* 4 damped combs into 2 allpasses per side. The combs are shared and the sides sum them with different signs */
-static void reverb_block(reverb_t *v, const int32_t *in, int32_t *l, int32_t *r, int32_t size, int32_t damp)
+/* each line's base. The lengths share no factor, so the loop's echoes do not line up: 140 ms around */
+enum {
+    REV_D1 = 67, REV_D2 = 97,
+    REV_A1 = 197, REV_L1 = 463, REV_A2 = 271, REV_L2 = 557, REV_A3 = 233, REV_L3 = 419, REV_A4 = 313, REV_L4 = 631,
+    REV_D1_AT = 0,
+    REV_D2_AT = REV_D1_AT + REV_D1 + 1,
+    REV_A1_AT = REV_D2_AT + REV_D2 + 1,
+    REV_L1_AT = REV_A1_AT + REV_A1 + 1,
+    REV_A2_AT = REV_L1_AT + REV_L1 + 1,
+    REV_L2_AT = REV_A2_AT + REV_A2 + 1,
+    REV_A3_AT = REV_L2_AT + REV_L2 + 1,
+    REV_L3_AT = REV_A3_AT + REV_A3 + 1,
+    REV_A4_AT = REV_L3_AT + REV_L3 + 1,
+    REV_L4_AT = REV_A4_AT + REV_A4 + 1,
+    REV_END = REV_L4_AT + REV_L4 + 1,
+};
+_Static_assert(REV_END <= REV_BUF_LEN, "the lines must not overlap");
+
+/* one loop of four allpass and delay stages, at half the sample rate. Its allpasses take no multiply, and the two sides tap it at different points */
+AUDIO_RAM static void reverb_block(reverb_t *v, const int32_t *in, int32_t *l, int32_t *r, int32_t size, int32_t damp)
 {
-    int32_t fb = 25000 + clamp(size, 0, 127) * 50, loss = clamp(damp, 0, 127) * 200;
-    uint32_t i, k;
-    for (i = 0; i < CTL; i++) {
-        int32_t c[REV_COMBS], wet = (in[i] * 2580) >> 15;
-        for (k = 0; k < REV_COMBS; k++) {
-            uint16_t pos = v->comb_i[k];
-            int32_t o = v->comb[k][pos];
-            v->comb_lp[k] = o + (((v->comb_lp[k] - o) * loss) >> 15);
-            v->comb[k][pos] = (int16_t)clamp(wet + ((v->comb_lp[k] * fb) >> 15), -32768, 32767);
-            v->comb_i[k] = (uint16_t)(pos + 1u >= REV_COMB_LEN[k] ? 0u : pos + 1u);
-            c[k] = o;
-        }
-        l[i] += reverb_ap(v, 0, c[0] + c[1] + c[2] + c[3]);
-        r[i] += reverb_ap(v, 1, c[0] - c[1] + c[2] - c[3]);
+    int32_t fb = 8500 + clamp(size, 0, 127) * 145, loss = clamp(damp, 0, 127) * 200;
+    int32_t last_l = v->last_l, last_r = v->last_r, feedback = v->feedback, lp0 = v->lp[0], lp1 = v->lp[1];
+    uint32_t at = v->w, i;
+    for (i = 0; i < CTL; i += 2u) {
+        int32_t a = (((in[i] + in[i + 1u]) >> 1) * REV_INPUT_Q15) >> 15, out_l, out_r, tap;
+        at--;
+        a = reverb_ap(v, at, REV_D1_AT, REV_D1, a);
+        a = reverb_ap(v, at, REV_D2_AT, REV_D2, a);
+        a = reverb_ap(v, at, REV_A1_AT, REV_A1, a + feedback);
+        REV_WRITE(v, at, REV_L1_AT, a);
+        tap = REV_READ(v, at, REV_L1_AT, REV_L1);
+        lp0 = tap + (((lp0 - tap) * loss) >> 15);
+        out_l = tap;
+        a = reverb_ap(v, at, REV_A2_AT, REV_A2, lp0);
+        REV_WRITE(v, at, REV_L2_AT, a);
+        tap = REV_READ(v, at, REV_L2_AT, REV_L2);
+        out_r = tap;
+        a = reverb_ap(v, at, REV_A3_AT, REV_A3, tap);
+        REV_WRITE(v, at, REV_L3_AT, a);
+        tap = REV_READ(v, at, REV_L3_AT, REV_L3);
+        lp1 = tap + (((lp1 - tap) * loss) >> 15);
+        out_l -= tap;
+        a = reverb_ap(v, at, REV_A4_AT, REV_A4, lp1);
+        REV_WRITE(v, at, REV_L4_AT, a);
+        tap = REV_READ(v, at, REV_L4_AT, REV_L4);
+        out_r -= tap;
+        feedback = (tap * fb) >> 15;
+        l[i] += (last_l + out_l) >> 1;
+        r[i] += (last_r + out_r) >> 1;
+        l[i + 1u] += out_l;
+        r[i + 1u] += out_r;
+        last_l = out_l;
+        last_r = out_r;
     }
+    v->w = at;
+    v->feedback = feedback;
+    v->lp[0] = lp0;
+    v->lp[1] = lp1;
+    v->last_l = last_l;
+    v->last_r = last_r;
 }

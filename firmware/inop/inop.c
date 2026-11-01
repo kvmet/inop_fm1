@@ -19,6 +19,9 @@
 
 /* audio code run from RAM, out of the XIP cache */
 #define AUDIO_RAM __attribute__((section(".ram_hot"), flatten))
+/* RAM and XIP are too far apart for a direct call: a call between them goes through a pointer the compiler cannot fold */
+static inline __attribute__((always_inline)) void *audio_far(void *p) { void *volatile q = p; return q; }
+#define AUDIO_FAR(fn) ((__typeof__(&fn))audio_far((void *)&fn))
 
 #define FM1_LED_DIM_NS 6400u     /* every unlit LED's glow: about 2/30 of lit. Longer than the 595 shift, so each scan tick waits 2 to 3 us */
 
@@ -48,9 +51,10 @@ struct { uint32_t magic, failed, pending; } bootguard __attribute__((section(".n
 #include "fm_engine.c"
 #include "perc_engine.c"
 #include "swarm_engine.c"
+#include "felucca_wave_tables.h"
+#include "wave_engine.c"
 #define POOL_SECTION __attribute__((section(".pool")))
 #include "fx_sends.c"
-#include "phys_engine.c"
 #include "voice_steal.c"
 #include "voices.c"
 #include "usb.c"

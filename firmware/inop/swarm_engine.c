@@ -27,10 +27,10 @@ typedef struct {
     uint32_t rng, clock;
 } swarm_voice_t;
 
-static uint32_t swarm_mode(int32_t v) { return (uint32_t)clamp(v, 0, SWARM_MODES - 1); }
+static AUDIO_INLINE uint32_t swarm_mode(int32_t v) { return (uint32_t)clamp(v, 0, SWARM_MODES - 1); }
 
 /* SHAPE: 0 is a saw, 64 is a square, and 127 is a narrow pulse */
-static void swarm_shape(int32_t shape, int32_t *morph, uint32_t *width)
+static AUDIO_INLINE void swarm_shape(int32_t shape, int32_t *morph, uint32_t *width)
 {
     int32_t v = clamp(shape, 0, 127);
     *morph = v >= 64 ? 32767 : v * 512;
@@ -38,14 +38,14 @@ static void swarm_shape(int32_t shape, int32_t *morph, uint32_t *width)
 }
 
 /* Q15, so that SHAPE changes the tone and not the loudness: a square is louder than a saw, and a narrow pulse quieter */
-static int32_t swarm_shape_gain(int32_t shape)
+static AUDIO_INLINE int32_t swarm_shape_gain(int32_t shape)
 {
     int32_t v = clamp(shape, 0, 127);
     return v <= 64 ? 32767 - v * 215 : 19007 + (v - 64) * 340;
 }
 
 /* Q8. A saw minus a second saw: their ramps cancel in part, and their means stay 0 at every setting */
-static inline int32_t swarm_line(uint32_t a, uint32_t b, int32_t morph)
+static AUDIO_INLINE int32_t swarm_line(uint32_t a, uint32_t b, int32_t morph)
 {
     return ((int32_t)(a >> 8) - (1 << 23)) - ((morph * ((int32_t)(b >> 16) - 32768)) >> 7);
 }
@@ -54,7 +54,7 @@ static inline int32_t swarm_wave(uint32_t ph, int32_t morph, uint32_t width) { r
 
 /* Q8, into d, the first difference of the block: a step of jump between samples e and e + 1, band-limited by polyBLEP.
  * t: Q15, how far past the edge sample e + 1 is */
-static inline void swarm_edge(int32_t *d, int32_t *carry, uint32_t e, int32_t jump, int32_t t)
+static AUDIO_INLINE void swarm_edge(int32_t *d, int32_t *carry, uint32_t e, int32_t jump, int32_t t)
 {
     int32_t x = t - 32768, j = jump >> 8;
     int32_t before = (j * (((x * x) >> 15) + x + x + 32768)) >> 8, after = (j * (t + t - ((t * t) >> 15) - 32768)) >> 8;
@@ -68,14 +68,14 @@ static inline void swarm_edge(int32_t *d, int32_t *carry, uint32_t e, int32_t ju
     }
 }
 
-static inline int32_t swarm_past_edge(uint32_t ph, uint32_t inc)
+static AUDIO_INLINE int32_t swarm_past_edge(uint32_t ph, uint32_t inc)
 {
     uint32_t t = ph / ((inc >> 15) | 1u);
     return t > 32768u ? 32768 : (int32_t)t;
 }
 
 /* the wraps of a saw at ph on sample from, up to and including one onto sample to */
-static inline void swarm_wraps(int32_t *d, int32_t *carry, uint32_t ph, uint32_t inc, uint32_t from, uint32_t to, int32_t jump)
+static AUDIO_INLINE void swarm_wraps(int32_t *d, int32_t *carry, uint32_t ph, uint32_t inc, uint32_t from, uint32_t to, int32_t jump)
 {
     uint32_t left = 0u - ph - 1u;
     while ((uint64_t)inc * (to - from) > left) {
@@ -114,7 +114,7 @@ static void swarm_start(swarm_voice_t *S, const pkt_t *p, uint32_t seed)
     S->clock = 0;
 }
 
-static void swarm_drift(swarm_voice_t *S, int32_t depth)
+static AUDIO_INLINE void swarm_drift(swarm_voice_t *S, int32_t depth)
 {
     uint32_t i;
     if (++S->clock % SWARM_DRIFT_BLOCKS == 0u) {
@@ -144,7 +144,7 @@ static uint32_t swarm_edges_q8(const pkt_t *p)
 }
 
 /* adds one block to out. pitch: an offset in 1/16 semitones. timbre: an offset to SHAPE */
-static void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t *out, int32_t pitch, int32_t timbre)
+static AUDIO_INLINE void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t *out, int32_t pitch, int32_t timbre)
 {
     int32_t d[CTL + 2u], sub[CTL];
     int32_t shape = clamp(p->v[PV_E2] + timbre, 0, 127), spread = clamp(p->v[PV_E1], 0, 127), shift = clamp(p->v[PV_E3], 0, 127);
@@ -155,7 +155,7 @@ static void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t *out, int32_t
     d_morph = (morph_to - morph) / CTL;
     swarm_drift(S, drift * drift);       /* 127 moves each oscillator by up to 1.5 % */
     for (s = 0; s < CTL; s++)
-        d[s] = sub[s] = 0;
+        d[s] = 0;
     d[CTL] = d[CTL + 1u] = 0;
     d[0] = S->carry;
     d[1] = -S->carry;
@@ -208,6 +208,9 @@ static void swarm_render(swarm_voice_t *S, const pkt_t *p, int32_t *out, int32_t
             ph += inc;
         }
         S->sub_phase = ph;
+    } else {
+        for (s = 0; s < CTL; s++)
+            sub[s] = 0;
     }
     S->morph = morph_to;
     ramp = S->shape_gain * (1 << CTL_BITS);

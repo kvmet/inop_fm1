@@ -158,15 +158,10 @@ static const char *const NAMES_SRC[MOD_SRCS] = {"OFF", "ENV", "LF1", "LF2", "VEL
 static const char *const NAMES_DST[MOD_DSTS] = {"OFF", "PTCH", "CUT", "RES", "LVL", "PAN", "DRV", "SHP", "CRSH", "RATE", "TIMB"};
 static const char *const NAMES_SHAPE[LFO_SHAPES] = {"SINE", "TRI", "SAW", "SQR", "S+H"};
 static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE"};
-static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PHYS", "PERC", "SWARM"};
+static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PERC", "SWARM", "WAVE"};
 static const char *const NAMES_PRIO[PRIOS] = {"XXLO", "XLO", "LOW", "NORM", "HIGH", "XHI", "XXHI"};
-static const char *const NAMES_MODEL[PM_COUNT] = {"MODL", "STRG", "MEMB", "SYMP"};
-static const char *const LABELS_PHYS[PM_COUNT][7] = {
-    {"STRC", "BRIT", "DAMP", "POS", "ACC", "BOW", "EXC"},
-    {"STRC", "BRIT", "DAMP", "POS", "ACC", "BOW", "EXC"},
-    {"HARM", "BRIT", "DAMP", "POS", "ACC", "BEND", "EXC"},
-    {"CHRD", "BRIT", "DAMP", "SYMP", "ACC", "BUZZ", "EXC"},
-};
+static const char *const NAMES_WAVE[WAVE_TABLES] = {"HARM", "PWM", "SYNC", "VOX", "FOLD", "DIGI", "METAL", "GRIT"};
+static const char *const LABELS_WAVE[7] = {"WAVE", "WARP", "PITCH2", "CROSS", "OSC2", "DETUNE", "NOISE"};
 
 static const char *const NAMES_ALG[FM_ALGS] = {"1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const NAMES_RATIO[FM_RATIOS] = {"1/4", "1/2", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14", "16"};
@@ -183,9 +178,9 @@ static const char *ui_label(const page_t *pg, uint32_t k)
 {
     uint32_t id = page_id(pg, k);
     if (id == PV_E0)
-        return ui_engine() == ENGINE_SWARM ? "STACK" : ui_engine() == ENGINE_PERC ? "MODE" : ui_engine() == ENGINE_PHYS ? "MODEL" : "ALGO";
+        return ui_engine() == ENGINE_WAVE ? "TABLE" : ui_engine() == ENGINE_SWARM ? "STACK" : ui_engine() == ENGINE_PERC ? "MODE" : "ALGO";
     if (id > PV_E0 && id <= PV_E7)
-        return ui_engine() == ENGINE_SWARM ? LABELS_SWARM[id - PV_E1] : ui_engine() == ENGINE_PERC ? LABELS_PERC[id - PV_E1] : ui_engine() == ENGINE_PHYS ? LABELS_PHYS[(uint32_t)clamp(ui_value(PV_E0), 0, 127) % PM_COUNT][id - PV_E1] : LABELS_FM[id - PV_E1];
+        return ui_engine() == ENGINE_WAVE ? LABELS_WAVE[id - PV_E1] : ui_engine() == ENGINE_SWARM ? LABELS_SWARM[id - PV_E1] : ui_engine() == ENGINE_PERC ? LABELS_PERC[id - PV_E1] : LABELS_FM[id - PV_E1];
     return pg->label[k];
 }
 
@@ -195,7 +190,7 @@ static const char *const *value_names(uint32_t id, int32_t *count)
     if (id == PV_FLT_TYPE) { *count = FLT_TYPES; return NAMES_FILTER; }
     if (id == PV_ENGINE) { *count = ENGINES; return NAMES_ENGINE; }
     if (id == PV_PRIO) { *count = PRIOS; return NAMES_PRIO; }
-    if (id == PV_E0 && ui_engine() == ENGINE_PHYS) { *count = PM_COUNT; return NAMES_MODEL; }
+    if (id == PV_E0 && ui_engine() == ENGINE_WAVE) { *count = WAVE_TABLES; return NAMES_WAVE; }
     if (id == PV_E0 && ui_engine() == ENGINE_PERC) { *count = PERC_MODES; return NAMES_PERC; }
     if (id == PV_E0 && ui_engine() == ENGINE_SWARM) { *count = SWARM_MODES; return NAMES_SWARM; }
     if (id == PV_E0 && ui_engine() == ENGINE_FM) { *count = FM_ALGS; return NAMES_ALG; }
@@ -227,6 +222,10 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, 0, count - 1);
     if (id == PV_PAN)
         return clamp(v, -63, 63);
+    if (id == PV_E3 && ui_engine() == ENGINE_WAVE)
+        return clamp(v, -WAVE_PITCH2_MAX, WAVE_PITCH2_MAX);
+    if (id == PV_E4 && ui_engine() == ENGINE_WAVE)
+        return clamp(v, -WAVE_CROSS_MAX, WAVE_CROSS_MAX);
     if (id >= PV_SLOT_AMT0 && id <= PV_SLOT_AMT3)
         return clamp(v, -127, 127);
     return clamp(v, 0, 127);
@@ -899,17 +898,34 @@ static void free_routes(const pkt_t *p)
     }
 }
 
+/* us of a block. Line 1, each engine: one voice alone / one voice's share among all */
+static char *put_us(char *s, const char *label, uint32_t ticks)
+{
+    s = put_text(s, label);
+    return put_int(s, (int32_t)(ticks / FM1_TICKS_PER_US));
+}
+
 static void free_voices(void)
 {
-    static const char *const VARIANTS[COST_VARIANTS] = {"FM ", "MOD ", "STR ", "MEM ", "SYM ", "PERC ", "SWM "};
-    char b[48], *s;
+    static const char *const VARIANTS[ENGINES] = {"F ", " P ", " S ", " W "};
+    char b[48], *s = b;
     uint32_t k;
-    cv_text(4, 0, &AF_S, "VOICES THAT FIT", T_MID);
-    for (k = 0; k < COST_VARIANTS; k++) {
-        s = put_text(b, VARIANTS[k]);
-        put_int(s, (int32_t)voices_fit(k));
-        cv_text(4 + (int32_t)(k % 3u) * 62, 16 + (int32_t)(k / 3u) * 15, &AF_S, b, T_TEXT);
+    for (k = 0; k < ENGINES; k++) {
+        s = put_us(s, VARIANTS[k], cost_alone[k]);
+        s = put_us(s, "/", cost_shared[k]);
     }
+    cv_text(4, 0, &AF_S, b, T_TEXT);
+    s = put_us(b, "FLT ", cost_effect[COST_FILTER]);
+    s = put_us(s, " SHP ", cost_effect[COST_SHAPER]);
+    s = put_us(s, " DRV ", cost_effect[COST_DRIVE]);
+    s = put_us(s, " CR ", cost_effect[COST_CRUSH]);
+    put_us(s, " RT ", cost_effect[COST_RATE]);
+    cv_text(4, 16, &AF_S, b, T_TEXT);
+    s = put_us(b, "DLY ", cost_delay);
+    s = put_us(s, " REV ", cost_reverb);
+    s = put_us(s, " MST ", cost_master);
+    put_us(s, " BUD ", voice_budget);
+    cv_text(4, 31, &AF_S, b, T_MID);
 }
 
 #define CURVE_TOP 3
@@ -1032,11 +1048,25 @@ static void free_swarm(const pkt_t *p)
         cv_rect(((int32_t)FREE_W - sub_w) / 2, SUB_Y, sub_w, SUB_H, T_MID);
 }
 
-static void free_phys(int32_t model)
+/* one cycle of the wave as WAVE and WARP set it, over a tick for each of the table's frames */
+static void free_wave(const pkt_t *p)
 {
-    static const char *const MODELS[PM_COUNT] = {"MODAL", "STRING", "MEMBRANE", "SYMPATHETIC"};
-    cv_text(4, 4, &AF_S, "PHYSICAL MODEL", T_MID);
-    cv_text(4, 20, &AF_M, MODELS[(uint32_t)clamp(model, 0, 127) % PM_COUNT], T_TEXT);
+    enum { WAVE_TOP = 3, WAVE_H = 30, TICK_Y = 37, TICK_H = 5 };
+    const int16_t (*frames)[sizeof WAVE_DATA[0][0] / sizeof(int16_t)] = WAVE_DATA[wave_table(p->v[PV_E0])];
+    wave_voice_t W;
+    int32_t x, py = 0, w = (int32_t)FREE_W - 8, position = wave_position(p->v[PV_E1]), mix = (position >> 1) & 0x7FFF;
+    uint32_t f = (uint32_t)position >> 16, g = f + 1u < WAVE_FRAMES ? f + 1u : f, cycle = 0xFFFFFFFFu / (uint32_t)w, i;
+    wave_set_bend(&W, p->v[PV_E2]);
+    for (x = 0; x < w; x++) {
+        uint32_t ph = (uint32_t)x * cycle;
+        int32_t y = wave_blend(frames[f], frames[g], WAVE_TOP_BITS, W.knee ? wave_bend(&W, ph) : ph, mix);
+        int32_t cy = WAVE_TOP + WAVE_H / 2 - y * (WAVE_H / 2) / 32768;
+        if (x)
+            cv_line(3 + x, py, 4 + x, cy, T_THEME);
+        py = cy;
+    }
+    for (i = 0; i < WAVE_FRAMES; i++)
+        cv_rect(4 + (int32_t)i * (w - 2) / ((int32_t)WAVE_FRAMES - 1), TICK_Y, 2, TICK_H, i == (uint32_t)(position + 32768) >> 16 ? T_THEME : T_MID);
 }
 
 /* each partial as a bar: where it sits over the note's pitch, and how loud it starts */
@@ -1151,8 +1181,8 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             free_swarm(&p);
         else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_PERC)
             free_perc(&p);
-        else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_PHYS)
-            free_phys(p.v[PV_E0]);
+        else if ((pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2]) && clamp(p.v[PV_ENGINE], 0, ENGINES - 1) == ENGINE_WAVE)
+            free_wave(&p);
         else if (pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2])
             free_fm_chart(&p);
         else if (pg == &PAGES[PG_GLOBAL])
@@ -1277,21 +1307,6 @@ static void ui_draw(void)
     draw_hint(t);
 }
 
-static void sound_phys(sound_t *s, int32_t model, int32_t e1, int32_t e2, int32_t e3, int32_t e4, int32_t e5, int32_t e6, int32_t e7)
-{
-    s->v[PV_ENGINE] = ENGINE_PHYS;
-    s->v[PV_E0] = (int8_t)model;
-    s->v[PV_E1] = (int8_t)e1;
-    s->v[PV_E2] = (int8_t)e2;
-    s->v[PV_E3] = (int8_t)e3;
-    s->v[PV_E4] = (int8_t)e4;
-    s->v[PV_E5] = (int8_t)e5;
-    s->v[PV_E6] = (int8_t)e6;
-    s->v[PV_E7] = (int8_t)e7;
-    s->v[PV_AMP_R] = 116;
-    s->v[PV_NOTE] = 48;
-}
-
 /* ratios: knob values. mod_d, mod_s: the MOD envelope, which sets how the index moves */
 static void sound_fm(sound_t *s, int32_t alg, int32_t note, int32_t ratio_c, int32_t ratio_a, int32_t ratio_b, int32_t index_a, int32_t index_b, int32_t feedback, int32_t detune, int32_t mod_d, int32_t mod_s)
 {
@@ -1307,6 +1322,20 @@ static void sound_fm(sound_t *s, int32_t alg, int32_t note, int32_t ratio_c, int
     s->v[PV_E7] = (int8_t)detune;
     s->v[PV_MOD_D] = (int8_t)mod_d;
     s->v[PV_MOD_S] = (int8_t)mod_s;
+}
+
+static void sound_wave(sound_t *s, int32_t table, int32_t note, int32_t wave, int32_t warp, int32_t pitch2, int32_t cross, int32_t osc2, int32_t detune, int32_t noise)
+{
+    s->v[PV_ENGINE] = ENGINE_WAVE;
+    s->v[PV_E0] = (int8_t)table;
+    s->v[PV_NOTE] = (int8_t)note;
+    s->v[PV_E1] = (int8_t)wave;
+    s->v[PV_E2] = (int8_t)warp;
+    s->v[PV_E3] = (int8_t)pitch2;
+    s->v[PV_E4] = (int8_t)cross;
+    s->v[PV_E5] = (int8_t)osc2;
+    s->v[PV_E6] = (int8_t)detune;
+    s->v[PV_E7] = (int8_t)noise;
 }
 
 static void sound_swarm(sound_t *s, int32_t mode, int32_t note, int32_t spread, int32_t shape, int32_t shift, int32_t mix, int32_t sub, int32_t drift)
@@ -1364,14 +1393,17 @@ static void ui_init(void)
     globals[G_DELAY_FB] = 50;
     globals[G_REVERB_SIZE] = 80;
     globals[G_REVERB_DAMP] = 40;
-    sound_phys(&sounds[3], PM_MEMB, 0, 52, 40, 30, 100, 40, 30);     /* toms */
-    sound_phys(&sounds[4], PM_MEMB, 112, 76, 56, 44, 100, 14, 24);   /* hand drum */
-    sound_phys(&sounds[5], PM_STRING, 56, 72, 84, 40, 96, 0, 0);     /* pluck */
     sound_perc(&sounds[0], PERC_SKIN, 36, 82, 0, 0, 0, 10, 50, 0, 127);       /* kick */
     sound_perc(&sounds[1], PERC_SKIN, 50, 70, 0, 64, 70, 20, 15, 70, 127);     /* snare */
     sound_perc(&sounds[2], PERC_METAL, 72, 50, 60, 64, 110, 40, 0, 60, 127);   /* hat */
     sounds[2].v[PV_FLT_TYPE] = FLT_HP;
     sounds[2].v[PV_FLT_CUT] = 90;
+    sound_perc(&sounds[3], PERC_SKIN, 45, 78, 0, 64, 40, 0, 30, 0, 40);       /* toms */
+    sound_perc(&sounds[4], PERC_SKIN, 52, 64, 0, 64, 60, 0, 12, 8, 60);       /* hand drum */
+    sound_wave(&sounds[5], 0, 60, 90, 0, 0, 0, 0, 0, 0);       /* pluck */
+    sounds[5].v[PV_AMP_D] = 72;
+    sounds[5].v[PV_AMP_S] = 0;
+    sounds[5].v[PV_LEN] = starter_len(72);
     sound_perc(&sounds[6], PERC_METAL, 60, 90, 60, 64, 100, 50, 5, 5, 117);    /* metal hit */
     sound_fm(&sounds[7], 1, 36, 2, 2, 3, 70, 40, 0, 0, 70, 0);        /* bass */
     sound_fm(&sounds[8], 4, 72, 2, 11, 6, 70, 40, 0, 30, 100, 0);     /* bell */
@@ -1384,18 +1416,29 @@ static void ui_init(void)
     sounds[9].v[PV_LEN] = starter_len(90);
     sound_fm(&sounds[10], 3, 36, 2, 2, 3, 80, 70, 90, 0, 90, 60);     /* growl */
     sound_fm(&sounds[11], 7, 60, 2, 3, 5, 80, 60, 0, 0, 64, 127);     /* organ */
-    sound_swarm(&sounds[12], SWARM_UNISON, 36, 50, 0, 0, 90, 60, 70);        /* drone */
+    sound_swarm(&sounds[12], SWARM_UNISON, 36, 50, 0, 0, 100, 60, 70);       /* drone */
     sounds[12].v[PV_LEN] = (int8_t)LEN_HOLD;
     sounds[12].v[PV_AMP_A] = 95;
     sounds[12].v[PV_AMP_R] = 110;
-    sound_swarm(&sounds[13], SWARM_UNISON, 36, 40, 10, 0, 70, 40, 10);       /* big bass */
-    sound_swarm(&sounds[14], SWARM_OCTAVES, 48, 40, 80, 0, 80, 0, 60);       /* pulse pad */
+    sound_swarm(&sounds[13], SWARM_UNISON, 36, 40, 10, 0, 100, 40, 10);      /* big bass */
+    sound_swarm(&sounds[14], SWARM_OCTAVES, 48, 40, 80, 0, 100, 0, 60);      /* pulse pad */
     sounds[14].v[PV_AMP_A] = 85;
     sounds[14].v[PV_AMP_R] = 105;
     sounds[14].v[PV_LFO1_RATE] = 30;
     sounds[14].v[PV_SLOT_DST1] = MOD_DST_TIMBRE;
     sounds[14].v[PV_SLOT_AMT1] = 30;
-    sound_swarm(&sounds[15], SWARM_UNISON, 48, 35, 0, 70, 60, 0, 10);        /* sync lead */
+    sound_swarm(&sounds[15], SWARM_UNISON, 48, 35, 0, 70, 100, 0, 10);       /* sync lead */
+    sound_wave(&sounds[16], 2, 36, 40, 0, -12, 0, 90, 0, 0);                 /* SYNC bass with a sub */
+    sound_wave(&sounds[17], 3, 48, 30, 0, 0, 0, 80, 40, 0);                  /* VOX pad */
+    sounds[17].v[PV_AMP_A] = 85;
+    sounds[17].v[PV_AMP_R] = 100;
+    sounds[17].v[PV_LFO1_RATE] = 30;
+    sounds[17].v[PV_SLOT_DST1] = MOD_DST_TIMBRE;
+    sounds[17].v[PV_SLOT_AMT1] = 60;
+    sound_wave(&sounds[18], 6, 48, 64, 30, 7, -63, 0, 0, 10);                /* METAL ring */
+    sounds[18].v[PV_AMP_D] = 85;
+    sounds[18].v[PV_AMP_S] = 0;
+    sounds[18].v[PV_LEN] = starter_len(85);
     ui.bpm = 120;
     ui.copy_src = NO_KEY;
     ui.track_key = NO_KEY;

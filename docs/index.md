@@ -16,7 +16,7 @@
 
 - Voices are one pool shared by all tracks.
 - There is no voice assignment page. A voice holds its engine only while its trigger lasts.
-- The firmware measures each engine's slowest block at start-up. The number of voices depends on what is playing, up to 8.
+- The firmware measures each engine's slowest block at start-up. The number of voices depends on what is playing, up to 16.
 - A track can limit how many voices it holds, such as 1 for a mono bass.
 
 ### Note length
@@ -29,11 +29,11 @@ Priority has 7 levels: XXLO, XLO, LOW, NORM, HIGH, XHI, XXHI. The sound sets a b
 
 When a trigger needs budget, it frees voices in this order until it fits:
 
-1. Voices that are nearly silent.
+1. Voices of equal or lower priority that are nearly silent after their attack.
 2. Voices of lower priority, quietest first.
 3. Voices of equal priority, oldest first.
 
-A trigger never steals from a higher priority. If it still does not fit, it does not sound.
+A trigger never steals from a higher priority, even from a voice that is nearly silent or has not sounded yet. If it still does not fit, it does not sound, and the `D` counter rises.
 
 A stolen voice fades out over one audio block, and the new voice starts in the next block. A trigger that steals can start up to 2.9 ms late.
 
@@ -163,11 +163,10 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 
 ## Engines
 
-- The first pass has an FM engine, a physical modeling engine and the Perc drum engine. More engines are added later.
-- The physical modeling models are modal, string, membrane and sympathetic strings.
-- The sound's amp envelope ends a voice on every engine. On physical modeling, keep sustain high to hear the model's own decay.
+- The engines are FM, Perc, SWARM and WAVE.
+- The sound's amp envelope ends a voice on every engine.
 - The engine choice is in the packet, so a trigger can choose its engine.
-- **TIMBRE:** a mod slot destination that moves each engine's main value: Index A and B on FM, FM on Perc, and Shape on SWARM. It does nothing on physical modeling.
+- **TIMBRE:** a mod slot destination that moves each engine's main value: Index A and B on FM, FM on Perc, Shape on SWARM and Wave on WAVE.
 - **SHAPE (FX page):** a wavefolder on every engine, up to 16 folds of drive. It starts folding at low values, and the output follows the input's level, so a sound keeps its loudness and its decay. It runs before DRIVE.
 - There are no samples and no sample slots.
 
@@ -214,6 +213,23 @@ Seven oscillators around the note, each with its own start phase, and a sine sub
 | 2 | Engine 2 | Drift: slow random movement of each oscillator's pitch, up to 1.5 %, and of its pulse width |
 
 The screen shows one cycle of the wave with its sync restarts. Under it is one tick per oscillator: across for detune, a row per octave for stack, and height for level. The bar below them widens with Sub.
+
+### WAVE
+
+Two oscillators read the same wavetable, one cycle at a time, and noise is added. Each table has 16 frames, and notes read a copy with only the harmonics that fit under Nyquist. The tables are `HARM`, `PWM`, `SYNC`, `VOX`, `FOLD`, `DIGI`, `METAL` and `GRIT`.
+
+| Knob | Page | Value |
+| --- | --- | --- |
+| ALGO | Engine 1 | Table |
+| 1 | Engine 1 | Wave: position in the table, moving smoothly between frames |
+| 2 | Engine 1 | Warp: bends the phase of both oscillators as they read, which adds harmonics |
+| 3 | Engine 1 | Pitch2: oscillator 2's pitch, -24 to +24 semitones |
+| 4 | Engine 1 | Cross: 0 is off. Below 0, oscillator 2 ring-modulates oscillator 1. Above 0, it frequency-modulates it. |
+| 1 | Engine 2 | Osc2: oscillator 2's own level. 0 is silent, and Cross still works. |
+| 2 | Engine 2 | Detune: oscillator 2's fine offset, up to 1 semitone |
+| 3 | Engine 2 | Noise: level |
+
+The screen shows one cycle of oscillator 1 as Wave and Warp set it, over a tick for each frame. Warp and Cross add harmonics that the tables do not limit, so extreme settings alias on high notes.
 
 ### Perc
 

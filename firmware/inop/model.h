@@ -6,7 +6,7 @@
 
 #define HALF_FRAMES 128u         /* I2S half buffer: 2.9 ms */
 #define NTRK 6u
-#define NVOICE 8u
+#define NVOICE 16u
 #define NELEM(a) (sizeof(a) / sizeof((a)[0]))
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
 
@@ -18,7 +18,15 @@
 #define STEP_INHERIT 0xFFu       /* a step's note, velocity or length that comes from its sound */
 #define LEN_HOLD (NSTEP + 1u)    /* a length: the note sounds until the track's next note */
 
-static inline int32_t clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
+#ifndef AUDIO_RAM
+#define AUDIO_RAM
+#define AUDIO_FAR(fn) fn
+#endif
+
+/* flatten inlines only what the RAM function itself calls. What those call must inline too, or it is a call out of RAM's reach */
+#define AUDIO_INLINE inline __attribute__((always_inline))
+
+static AUDIO_INLINE int32_t clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline int32_t mulq15(int32_t a, int32_t b) { return (a * b) >> 15; }
 
 enum {
@@ -43,7 +51,7 @@ typedef struct { int8_t v[PV_COUNT]; } pkt_t;
 /* project values: a trigger does not carry these. A page lists them as PV_COUNT + G_ */
 enum { G_DELAY_TIME, G_DELAY_FB, G_REVERB_SIZE, G_REVERB_DAMP, G_COUNT };
 #define ID_GLOBAL(g) (PV_COUNT + (g))
-enum { ENGINE_FM, ENGINE_PHYS, ENGINE_PERC, ENGINE_SWARM, ENGINES };
+enum { ENGINE_FM, ENGINE_PERC, ENGINE_SWARM, ENGINE_WAVE, ENGINES };
 enum { PRIO_XXLOW, PRIO_XLOW, PRIO_LOW, PRIO_NORMAL, PRIO_HIGH, PRIO_XHIGH, PRIO_XXHIGH, PRIOS };
 typedef pkt_t sound_t;           /* a pool sound is a packet with no step applied */
 
