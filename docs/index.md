@@ -53,7 +53,7 @@ Each voice runs from its packet in this order: engine, drive, shaper, bit crush,
 - **Master:** mix compression and mastering, then a limiter and soft clip that bound the output level.
 - **Envelope follower sends:** a voice sends to a follower instead of an audio output. The follower is a modulation source for any voice.
 
-Shared effects and the master have a fixed CPU cost, which is reserved before voices get budget. A SWARM voice costs more at higher notes and with Sync, since its work follows its waveform edges. It is charged for its note, and the Global page counts SWARM voices at middle C with Sync on.
+Shared effects and the master have a fixed CPU cost, which is reserved before voices get budget. A SWARM voice costs more at higher notes and with Sync, since its work follows its waveform edges. It is charged for its note. The System page shows what each engine, effect and shared stage costs.
 
 ## Modulation
 
@@ -80,7 +80,7 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 
 The engine sets what the 8 engine values mean. The mod slots page lists all 4 routes. The distortion and follower sends have no knob until they do something.
 
-Delay and reverb settings are project values and are not in the packet. GLO shows them, the tempo, and how many voices of each engine and model fit the budget.
+Delay and reverb settings are project values and are not in the packet. The Global page shows them and the tempo.
 
 | Page | SEL | Knob 1 | Knob 2 | Knob 3 | Knob 4 |
 | --- | --- | --- | --- | --- | --- |
@@ -110,9 +110,10 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 ## REC
 
 - **Hold:** copy. Press the source, then press each destination.
-- **Overdub:** press PLAY and REC together, in either order. The playing pattern takes what you do on the selected track, and it keeps playing. Tap PLAY to exit.
+- **Clear locks:** hold a step and tap REC. The step keeps its trigger and loses its locks, its note, velocity and length, its sound and its chance. Every held step clears. There is no undo yet.
+- **Overdub:** tap REC, under 300 ms with nothing else pressed. The playing pattern takes what you do on the selected track, and it keeps playing. Tap REC or PLAY to exit.
   - **Notes:** a key sounds at once and goes to the nearest step of the track. That step is turned on and takes the note and the held length. A step holds one note, so a second note on a step replaces the first.
-  - **Black keys:** tracks cannot change during overdub, so the black keys are notes too. The last black key stays shift. To change tracks, exit and enter again. The key LEDs show the keyboard as in play, not the steps, and the selected track's key flashes. `DUB` in the title bar inverts in time with it.
+  - **Black keys:** the black keys are notes too, and the last one stays shift. Hold REC and press OP1 to OP6 to change tracks. The key LEDs show the keyboard as in play, not the steps, and the selected track's key flashes. `DUB` in the title bar inverts in time with it.
   - **Knobs:** the knob squares show the values of the track's last trigger, so locks show as they play. A turned knob starts from the value shown and writes its value to each step the playhead reaches. It stops when the knob has been still for one step or 150 ms, whichever is longer. Hold REC to keep writing the knobs turned so far, then release REC to stop.
   - **Locks:** a lock changes only its step's trigger, so a step that is off takes no lock, and a sweep does not change a note already sounding. `LOCKS FULL` shows when the track has no lock memory left.
   - **Other controls:** the sound, global and track values change as usual and are not recorded. SEQ does nothing. There is no undo yet.
@@ -120,46 +121,58 @@ The delay holds at most 0.74 s. A longer setting stops at that length. A change 
 
 ## Keyboard
 
-- **Compose (default):** tap a white key to toggle its step.
-- **Play:** tap PLAY. White keys play notes, and nothing is recorded. Tap PLAY again to return to compose. PLAY acts on release, so that PLAY and REC together can start overdub.
-- **Black keys:** OP1 to OP6 select a track in every state but overdub. Hold one for 300 ms to show the track page while it is held: knob 1 sets the track length, and knob 2 sets the base sound.
-- **OCT:** in compose, OCT moves the steps that the white keys reach. In play, OCT moves the keys by an octave, up to 3 each way. The bottom line of the screen says which.
+- **Steps (default):** tap a white key to toggle its step. The title bar says `STEPS`.
+- **Notes:** tap PLAY. White keys play notes, and nothing is recorded. The title bar says `NOTES`. Tap PLAY again to return to steps.
+- **Stop:** hold shift and press PLAY. The sequencer stops at step 1, the voices fade at once, and the counter says `STOP`. Press again to start from step 1. A pattern chosen while stopped starts at once. The keys still play notes while stopped.
+- **Black keys:** OP1 to OP6 select a track, except in overdub, where they need REC held. Hold one for 300 ms to show the track page while it is held: knob 1 sets the track length, and knob 2 sets the base sound.
+- **OCT:** in steps mode, OCT moves the steps that the white keys reach. In notes mode, OCT moves the keys by an octave, up to 3 each way. The bottom line of the screen says which.
 - **Shift:** hold the last black key to move numeric values by 10 per click. Selectors still move by 1. Shift is off in pattern select, where that key is a pattern.
 - **Patterns:** tap SEQ for pattern select, and tap SEQ again to leave. Each of the 27 keys is one pattern, with no banks. Hold REC there to copy a pattern: press the source, then each destination.
-- **Held steps:** hold a white key for 300 ms or more to view its step's values. Releasing changes nothing. Several steps can be held. A knob move changes every held step by the same amount and turns those steps on. The screen shows the values of the step held longest. The note knob sets pitch.
+- **Held steps:** hold a white key for 300 ms or more to view its step's values. Releasing changes nothing. Several steps can be held. A knob move changes every held step by the same amount and turns those steps on. The screen shows the values of the step held longest, and the values that step sets for itself have their own color. The note knob sets pitch. A copy or a knob move that runs out of lock memory shows `LOCKS FULL`.
 - **Step LEDs:** steps 1-4 and 9-12 show brighter than 5-8 and 13-16, to match the screen. An empty step is about 2/30 of full or off, and a step that is on is full or half. A step with a dot on the screen changes level briefly about once a second.
 
 ## Screen
 
-- **Layout:** 1 px borders mark each area. Top to bottom: title bar, knob squares and free space, sequence, bottom row.
-- **Title bar:** mode, page, track, track sound, pattern, counter and BPM. `P3>1` means pattern 3 is shown and pattern 1 plays. The counter `48.15` means the 48th play and step 15 of the playing pattern. One play ends when the pattern's longest track completes. The play number wraps from 64 to 1 and starts at 1 when a committed pattern starts.
+- **Layout:** 1 px borders mark each area. Top to bottom: title bar 20 px, knob squares 47 px, free space 72 px, sequence 79 px, bottom row 16 px.
+- **Title bar:** mode, page, track, pattern, counter and BPM. `P3>1` means pattern 3 is shown and pattern 1 plays. The counter `48.15` means the 48th play and step 15 of the playing pattern. One play ends when the pattern's longest track completes. The play number wraps from 64 to 1 and starts at 1 when a committed pattern starts.
 - **Knob squares:** row 1 is SEL and knobs 1 to 4, as on the panel, with each name over its value. Row 2 is ALGO, under SEL.
-- **Free space:** to the right of ALGO. The page sets what it shows. A sound copy prompt replaces it while it is active.
+- **Sound square:** under ALGO. `S12 x3` means the knobs edit sound 12, and 3 tracks across all patterns use it, so all 3 hear a change.
+- **Free space:** to the right of ALGO and the sound square. The page sets what it shows. A sound copy prompt replaces it while it is active.
+- **Unused knobs:** blank, and turning them does nothing.
 - **Page tabs:** when a page button has more than one page, its lower edge shows one segment per page. The shown page's segment is solid. Press the page button again for the next page.
-- **Bottom row:** the OCT hint on the left. On the right, CPU, active voices, and L, D and S: late audio buffers, dropped triggers and stolen voices. These three show 2 digits and wrap, so a change shows that it is happening. A held step's values replace them while it is held.
-- **Sequence:** below the knobs, one row of steps per track, for the pattern being composed or previewed. All tracks use one step width, so shorter tracks end early. A playhead shows only when the shown pattern is playing. Each row has a square for each step and a lane under the squares for the playhead. A step with locks, or with a changed note, velocity or length, has a dot in its square. The selected track's number is inverted. A bar under its steps marks the ones that the white keys reach.
-- **Page buttons:** the first press shows the group's last page. Each next press moves through the group.
+- **Bottom row:** the OCT hint on the left. On the right, in fixed places, `CPU 42 V 08 D00`: load, active voices and dropped triggers. D wraps at 100 and flashes for 1 s on a new drop. A held step's values replace them while it is held. The System page shows late audio buffers and stolen voices.
+- **Sequence:** below the free space, one row of steps per track, for the pattern being edited or previewed. All tracks use one step width, so shorter tracks end early. A playhead shows only when the shown pattern is playing. Each row has a square for each step and a lane under the squares for the playhead. A step with locks, or with a changed note, velocity, length or chance, has a dot in its square. The selected track's number is inverted. A line in its lane marks the steps that the white keys reach.
+- **Page buttons:** the first press shows the group's last page. Each next press moves through the group. HOME has one page, so it always lands there.
 - **Knobs:** with no step held, they edit the track's sound. With a step held, they edit that step.
-- **Counts:** D counts triggers that never sounded. S counts sounding voices that a new trigger cut short.
+- **Counts:** D counts triggers that never sounded. STOLEN on the System page counts sounding voices that a new trigger cut short.
 
 | Page | Free space |
 | --- | --- |
 | Home | Peak meters: master left and right, delay send, reverb send. A full bar is the limiter's ceiling, and 1/8 of a bar is 6 dB. |
 | Amp envelope, Mod envelope | The envelope's shape, with a fixed width for the sustain. The curve is the envelope code's own output. One pixel is 0.73 ms until the curve fills the width, and then the curve scales to fit. |
-| LFO 1, LFO 2 | Two cycles of the waveform at its start phase. |
+| Filter | The response on the CUT knob's scale, with a peak that follows RES. A sketch at 12 dB an octave, not a measurement. Key tracking does not show. |
+| LFO 1, LFO 2 | One second of the waveform at its start phase, so a faster rate shows more cycles, up to one cycle per 7 px. |
 | Mod slots | All 4 routes. |
-| Engine 1, Engine 2 | FM: the algorithm, with carriers solid and modulators outlined. Each box names the ratio knob that sets it: C, A or B. Feedback is marked on B2. Physical modeling: the model. Perc: each partial as a bar, at its frequency and starting level. |
-| Global | Voices of each engine and model that fit the budget. |
+| Engine 1, Engine 2 | FM: the algorithm, with carriers solid and modulators outlined. Each box names the ratio knob that sets it: C, A or B. Feedback is marked on B2. To its right, one cycle from the engine at full index. Perc: each partial as a bar, at its frequency and starting level. SWARM and WAVE: the wave. |
+| Step | `HOLD A STEP` until a step is held. |
+| System | Cost in us of one block: each engine alone and shared, each effect, delay, reverb and master, and the budget. Then late buffers, stolen voices and drops. |
+| Master, Arp, Save | `NOT BUILT`. Save warns that power off loses everything. |
 
 | Button | Pages |
 | --- | --- |
 | HOME | Home |
 | SEL | Engine 1, Engine 2 |
-| ARP | Filter |
+| EDIT | Step |
 | ENV | Amp envelope, Mod envelope |
-| FX | Effects |
+| FX | Filter, Effects |
 | LFO | LFO 1, LFO 2, Mod slots |
-| GLO | Global |
+| GLO | Global, Master, System |
+| ARP | Arp (reserved for a Perform and Arp group) |
+| SAVE | Save |
+
+The Step page's knob 1 sets the chance that a held step fires, 0 to 100 %. Knobs do nothing there with no step held.
+
+A sound keeps its engine values for each engine it has used. A new engine starts from its defaults, and sweeping back restores the old values. A lock on the engine changes only that step and does not use this memory.
 
 ## Engines
 
@@ -257,7 +270,12 @@ The amp envelope means the same as on every other engine:
 - Sound names, entered on the keyboard: 26 letters and an underscore on the 27 keys.
 - Clear an entire track.
 - Randomize an entire track: its triggers, or one chosen parameter.
-- Track mutes.
+- Track mutes: POLY latches a mute mode where the OP keys toggle tracks, with dimmed rows and OP LEDs.
+- One level of undo, with clear and randomize.
+- Perform layer on ARP: density, chance offset, mutate and fill as offsets that do not change the pattern. PIT fill, GLO reset, MONO mutate.
+- MIDI clock.
+- Mod slot shortcut: hold LFO and turn a knob.
+- Per-step parameter lane and range select.
 - Clear and randomize during overdub, including a way to unset locks and free their memory.
 - Chord modes.
 - Quantization: pitch to a scale, and recorded notes to steps.
@@ -266,12 +284,9 @@ The amp envelope means the same as on every other engine:
 - Arpeggiator.
 - Microtiming: a step fires ahead of or behind the grid.
 - Swing.
-- Random chance: each step already holds a chance that the sequencer follows, at 100 % with no control yet.
 - Ratchets: a step fires several times within its length.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
 - To consider for engines: a comb filter type (Digitone II), a metallic delay and reverb (VHIKK X), wave morph and buzz pulses at high fold (BIA), and speech, harmonic and bass engines (MicroFreak).
-- After the engines, a page review: the page plan, easier mod slot editing, better use of the buttons, and what the screen shows in each use, with smaller meters.
-- In the page review, also look at consistent spacing, zero padding of numbers, and possibly a monospace font.
 - Master compression and mastering.
 
 ## Open
