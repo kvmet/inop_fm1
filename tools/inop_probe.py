@@ -18,6 +18,9 @@ Device commands that load a pattern:
   len|base|swing|human PATTERN TRACK VALUE
   snd SOUND VALUE_ID VALUE
   clear PATTERN
+Device commands that read:
+  stat                                        counters and costs
+  presses                                     each key press since the last call, and the rows closed in every column
 Names from the firmware's enums (PV_FLT_CUT, G_DELAY_FB, B_LFO, E_K1, MOD_SRC_LFO1) stand for their numbers."""
 import argparse
 import ctypes

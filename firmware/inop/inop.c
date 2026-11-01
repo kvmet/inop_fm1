@@ -28,11 +28,16 @@ static inline __attribute__((always_inline)) void *audio_far(void *p) { void *vo
 #define AUDIO_FAR(fn) ((__typeof__(&fn))audio_far((void *)&fn))
 
 #define FM1_LED_DIM_NS 6400u     /* every unlit LED's glow: about 2/30 of lit. Longer than the 595 shift, so each scan tick waits 2 to 3 us */
+#define FM1_ROW_GUARD 1          /* pressing OP5 pulled row PA7 low with no column driven, which played the other keys on that row */
 
 #include <stdint.h>
 #if INOP_PROBE
 static volatile uint32_t probe_buttons, probe_notes;
 #define FM1_INPUT_INJECT(id) ((id) < 14u ? probe_buttons >> (id) & 1u : probe_notes >> ((id) - 14u) & 1u)
+static void probe_key_pressed(uint32_t id);
+#define FM1_INPUT_PRESSED(id) probe_key_pressed(id)
+static void probe_row_idle(uint32_t rows);
+#define FM1_ROW_IDLE_READ(rows) probe_row_idle(rows)
 static void probe_tap_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c);
 static void probe_tap_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *px);
 #define LCD_TAP_FILL probe_tap_fill

@@ -284,6 +284,13 @@ static void fm1_input_init(void)
         fm1_in.enc_prev[i] = fm1_in.enc_last[i] = 0xFF;   /* seeded by the first frame */
 }
 
+#ifndef FM1_INPUT_PRESSED
+#define FM1_INPUT_PRESSED(id)                      /* a test build logs a debounced press here */
+#endif
+#ifndef FM1_ROW_IDLE_READ
+#define FM1_ROW_IDLE_READ(rows) ((void)(rows))     /* a test build counts the rows read with no column driven */
+#endif
+
 static void fm1__key(uint32_t id, uint32_t closed)
 {
     volatile uint8_t *c = &fm1_in.cnt[id];
@@ -298,6 +305,8 @@ static void fm1__key(uint32_t id, uint32_t closed)
     if (++*c < (on ? FM1_DEB_RELEASE : FM1_DEB_PRESS))
         return;
     *c = 0;
+    if (!on)
+        FM1_INPUT_PRESSED(id);
     if (note) {
         if (!on) {
             uint32_t d = FM1_INPUT_NOW() - fm1_in.note_t0[id - 14u];
@@ -321,12 +330,52 @@ static void fm1__key(uint32_t id, uint32_t closed)
 #define FM1_INPUT_INJECT(id) 0u                    /* a test build closes a key here: it passes the same debounce */
 #endif
 
+#define FM1_ROW_HOLD 8u                            /* frames a row stays guarded after its last fault */
+#define FM1_ROW_CROWD 3u                           /* keys closing on one row within a frame: a fault, not a finger */
+#define FM1_ROW_CROWD_FRAMES 16u                   /* twice the longest fault logged with clean idle reads (8): past this it is a chord */
+static uint8_t fm1__row_hold[5];                   /* frames left in which the row takes no new press */
+static uint8_t fm1__row_crowd[5];                  /* frames in a row counted as crowded */
+
+static uint32_t fm1__key_down(uint32_t id)
+{
+    return id >= 14u ? fm1_in.notes >> (id - 14u) & 1u : fm1_in.buttons >> id & 1u;
+}
+
 static void fm1__keys(uint32_t p)                  /* the keys of column p, just read */
 {
     uint32_t r, raw = fm1_in.raw[p];
     for (r = 1; r < 5u; r++)
-        if (FM1_KEYMAP[r][p] >= 0)
-            fm1__key((uint32_t)FM1_KEYMAP[r][p], ((raw >> r) & 1u) | FM1_INPUT_INJECT((uint32_t)FM1_KEYMAP[r][p]));
+        if (FM1_KEYMAP[r][p] >= 0) {
+            uint32_t id = (uint32_t)FM1_KEYMAP[r][p], closed = (raw >> r) & 1u;
+            if (fm1__row_hold[r])                  /* no new press; a key already down stays down */
+                closed &= fm1__key_down(id);
+            fm1__key(id, closed | FM1_INPUT_INJECT(id));
+        }
+}
+
+/* A fault on a row closes all its keys at once, sometimes only for part of a frame, so the whole frame is judged before
+ * any of its keys counts. idle_rows: read with no column driven, closed only in a fault */
+static void fm1__keys_frame(uint32_t idle_rows)
+{
+    uint32_t r, p;
+    for (r = 1; r < 5u; r++) {
+        uint32_t closing = 0;
+        for (p = 0; p < FM1_NCOL; p++)
+            if (FM1_KEYMAP[r][p] >= 0 && (fm1_in.raw[p] >> r & 1u) && !fm1__key_down((uint32_t)FM1_KEYMAP[r][p]))
+                closing++;
+        if (idle_rows >> r & 1u) {
+            fm1__row_hold[r] = FM1_ROW_HOLD;
+            fm1__row_crowd[r] = 0;
+        } else if (closing >= FM1_ROW_CROWD) {
+            fm1__row_hold[r] = ++fm1__row_crowd[r] >= FM1_ROW_CROWD_FRAMES ? 0u : FM1_ROW_HOLD;
+        } else {
+            fm1__row_crowd[r] = 0;
+            if (fm1__row_hold[r])
+                fm1__row_hold[r]--;
+        }
+    }
+    for (p = 0; p < FM1_NCOL; p++)
+        fm1__keys(p);
 }
 
 static void fm1__frame(void);
@@ -510,6 +559,11 @@ static void fm1_input_tick(void)
     uint32_t p = fm1__tick_col, n = p + 1u == FM1_NCOL ? 0u : p + 1u;
     uint32_t t0 = fm1_ticks(), g = t0 - fm1_in_stat.last, b = 0;
     uint32_t w = 0xFFFFu ^ (1u << n) ^ (n < 2u ? 1u << (11u + n) : 0u), lit, dim = 0, k = fm1__dim_k;
+#ifdef FM1_ROW_GUARD
+    uint32_t w_next = w, idle_rows = 0;
+    if (n == 0u)                                   /* the frame's end: no column for a moment (about 13 us), so a row that reads closed is not the scan's */
+        w = 0xFFFFu;
+#endif
     uint32_t br = 0, kb = 0;
     fm1__led_lines(0);
     fm1_in_stat.last = t0;
@@ -560,11 +614,25 @@ static void fm1_input_tick(void)
     }
     fm1__sr_bits(w, k, 16u);
     fm1__sr_latch();                               /* column n, the lines dark */
+#ifdef FM1_ROW_GUARD
+    if (n == 0u) {
+        fm1__wait(FM1_SETTLE_US);
+        idle_rows = fm1__rows();
+        FM1_ROW_IDLE_READ(idle_rows);
+        fm1__sr_bits(w_next, 0u, 16u);
+        fm1__sr_latch();
+    }
+#endif
     if (n == 0u)                                   /* (a new frame: the mid level's turn, before column 0 lights) */
         fm1__mid_ph = (uint8_t)(fm1__mid_ph + 1u >= fm1__mid_n ? 0u : fm1__mid_ph + 1u);
     fm1__led_lines(FM1__LIT(n));
     fm1__tick_col = (uint8_t)n;
+#ifdef FM1_ROW_GUARD
+    if (n == 0u)
+        fm1__keys_frame(idle_rows);
+#else
     fm1__keys(p);                                  /* its keys now: no wait for the frame's end */
+#endif
     if (n == 0u) {
         fm1__frame();
         if (fm1__an_f)                             /* the power-on sweep: the next frame's picture */

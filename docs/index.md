@@ -183,6 +183,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 - **Patterns:** tap SEQ for pattern select, and tap SEQ again to leave. Each of the 27 keys is one pattern, with no banks. Hold REC there to copy a pattern: press the source, then each destination.
 - **Held steps:** hold a white key for 300 ms or more to view its step's values. Releasing changes nothing. Several steps can be held. A knob move changes every held step by the same amount and turns those steps on. The screen shows the values of the step held longest, and the values that step sets for itself have their own color. The note knob sets pitch. A copy or a knob move that runs out of lock memory shows `LOCKS FULL`.
 - **Step LEDs:** steps 1-4 and 9-12 show brighter than 5-8 and 13-16, to match the screen. An empty step is about 2/30 of full or off, and a step that is on is full or half. A step with a dot on the screen changes level briefly about once a second.
+- **Row faults:** pressing OP5 can pull its whole key row low, which would play other keys on that row. A row that reads closed with no column driven, or that has 3 or more keys closing in one scan frame (about 1.1 ms), takes no new press until 8 frames after the fault ends. Keys already down stay down. A real chord of 3 or more keys closing in one frame on one row plays after about 18 ms.
 
 ## Screen
 

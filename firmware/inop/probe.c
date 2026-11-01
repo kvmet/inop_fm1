@@ -83,6 +83,72 @@ static void probe_shot(void)
     probe_putc('E');
 }
 
+/* each debounced press, with row PA7's history around it: a press no finger made shows what the scan saw */
+#define PROBE_PRESSES 32u
+#define PROBE_ROW_TRACED 3u
+#define PROBE_HIST_BEFORE 16u
+#define PROBE_HIST_AFTER 8u
+#define PROBE_HIST (PROBE_HIST_BEFORE + PROBE_HIST_AFTER)
+#define PROBE_HIST_IDLE (1u << 15)
+static struct {
+    uint32_t ms, frame;
+    uint8_t id;
+    uint16_t hist[PROBE_HIST];   /* per frame: bit c column c read closed, PROBE_HIST_IDLE read closed with no column driven */
+} probe_presses[PROBE_PRESSES];
+static volatile uint32_t probe_press_count, probe_press_ready;
+static uint16_t probe_hist[PROBE_HIST];
+static uint32_t probe_hist_frame;
+
+static void probe_key_pressed(uint32_t id)
+{
+    uint32_t at = probe_press_count % PROBE_PRESSES;
+    probe_presses[at].ms = fm1_ms;
+    probe_presses[at].frame = probe_hist_frame;
+    probe_presses[at].id = (uint8_t)id;
+    probe_press_count++;
+}
+
+/* frames in which a row read closed with no column driven, per row */
+static volatile uint32_t probe_row_idle_frames[6];
+
+static void probe_row_idle(uint32_t rows)
+{
+    uint32_t r, c, row = 0;
+    for (r = 0; r < 6u; r++)
+        if (rows >> r & 1u)
+            probe_row_idle_frames[r]++;
+    for (c = 0; c < FM1_NCOL; c++)
+        row |= (fm1_in.raw[c] >> PROBE_ROW_TRACED & 1u) << c;
+    if (rows >> PROBE_ROW_TRACED & 1u)
+        row |= PROBE_HIST_IDLE;
+    probe_hist[probe_hist_frame % PROBE_HIST] = (uint16_t)row;
+    probe_hist_frame++;
+    while (probe_press_ready != probe_press_count &&
+           probe_hist_frame - probe_presses[probe_press_ready % PROBE_PRESSES].frame >= PROBE_HIST_AFTER) {
+        uint32_t at = probe_press_ready % PROBE_PRESSES, i;
+        for (i = 0; i < PROBE_HIST; i++)
+            probe_presses[at].hist[i] = probe_hist[(probe_presses[at].frame + PROBE_HIST_AFTER - PROBE_HIST + i) % PROBE_HIST];
+        probe_press_ready++;
+    }
+}
+
+/* the presses since the last call: a key id is a button below 14, else note key id - 14 */
+static void probe_presses_report(void)
+{
+    static uint32_t shown;
+    uint32_t count = probe_press_ready, i, f;
+    if (count - shown > PROBE_PRESSES)
+        shown = count - PROBE_PRESSES;
+    for (i = shown; i != count; i++) {
+        uint32_t at = i % PROBE_PRESSES;
+        probe_stat("press_id", probe_presses[at].id);
+        probe_stat("press_ms", (int32_t)probe_presses[at].ms);
+        for (f = 0; f < PROBE_HIST; f++)
+            probe_stat("press_hist", probe_presses[at].hist[f]);
+    }
+    shown = count;
+}
+
 static void probe_report(void)
 {
     probe_stat("cpu_pct", (int32_t)(audio_cpu_q8 * 100u / 256u));
@@ -95,6 +161,12 @@ static void probe_report(void)
     probe_stat("cost_delay_us", (int32_t)cost_delay);
     probe_stat("cost_reverb_us", (int32_t)cost_reverb);
     probe_stat("cost_master_us", (int32_t)cost_master);
+    probe_stat("row_idle_pa0", (int32_t)probe_row_idle_frames[0]);
+    probe_stat("row_idle_pa5", (int32_t)probe_row_idle_frames[1]);
+    probe_stat("row_idle_pa6", (int32_t)probe_row_idle_frames[2]);
+    probe_stat("row_idle_pa7", (int32_t)probe_row_idle_frames[3]);
+    probe_stat("row_idle_pa8", (int32_t)probe_row_idle_frames[4]);
+    probe_stat("row_idle_pb7", (int32_t)probe_row_idle_frames[5]);
     probe_stat("cost_alone_fm", (int32_t)cost_alone[ENGINE_FM]);
     probe_stat("cost_alone_swarm", (int32_t)cost_alone[ENGINE_SWARM]);
     probe_stat("cost_alone_wave", (int32_t)cost_alone[ENGINE_WAVE]);
@@ -292,6 +364,8 @@ static int probe_exec(char *line)
         ui_knob(ID_BPM, a[0] - (int32_t)ui.bpm);
     else if (probe_is(name, "stat") && n == 0u)
         probe_report();
+    else if (probe_is(name, "presses") && n == 0u)
+        probe_presses_report();
     else if (probe_is(name, "zero") && n == 0u)
         probe_zero();
     else if (probe_is(name, "shot") && n == 0u)
