@@ -18,7 +18,9 @@ static volatile int8_t globals[G_COUNT];
 static volatile uint8_t keys_play;       /* 1: the keys play notes on keys_track */
 static volatile uint8_t keys_track;
 static volatile int8_t keys_octave;
+static volatile uint8_t keys_chord;      /* with keys_play: the white keys play chords, and the black keys change them */
 static volatile uint32_t keys_mask;      /* the keys that play notes */
+static volatile uint32_t keys_mod_mask;  /* the keys that change a chord */
 enum { METER_L, METER_R, METER_DELAY, METER_REVERB, METERS };
 static volatile uint32_t meter_peak[METERS];     /* the panel reads and clears these */
 
@@ -32,6 +34,9 @@ static uint32_t seq_emit(uint32_t track, uint32_t step, const track_pat_t *t, ui
 /* keys poll here so a press waits at most one block */
 static int32_t keys_note(uint32_t k) { return 53 + (int32_t)k + 12 * keys_octave; }   /* key 0 is F3 at octave 0 */
 
+static uint32_t keys_latched;    /* keys whose voices ring on after the key is up */
+static struct { uint8_t key; uint32_t notes; pkt_t pkt; chord_keys_t press; } chord_now = {KEY_NONE};   /* key: what sounds in CHORD mode. notes: the modifiers it last saw */
+
 /* a played arp starts on its rate's next boundary, so it stays on the sequencer's grid. In sixths of a sample, as arp_t.wait */
 static int32_t keys_arp_wait(const pkt_t *p)
 {
@@ -39,30 +44,78 @@ static int32_t keys_arp_wait(const pkt_t *p)
     return seq.run == SEQ_RUNNING && into ? (int32_t)((cycle - into) * seq.samples_per_step / (LFO_SYNC_UNITS_PER_STEP / 6u)) : 0;
 }
 
+/* lets go of a key's notes, except that a latch keeps its voices ringing until the next press */
+static void keys_note_off(uint32_t k, int keep_voices)
+{
+    uint32_t i;
+    if (keep_voices)
+        keys_latched |= 1u << k;
+    else
+        voice_release_key(k);
+    for (i = 0; i < NTRK; i++)
+        arp_key_off(&arps[i], k);
+}
+
+static void keys_release_latched(void)
+{
+    uint32_t k;
+    for (k = 0; keys_latched; k++, keys_latched >>= 1)
+        if (keys_latched & 1u)
+            voice_release_key(k);
+}
+
+static void keys_chord_modifiers(const sound_t *base)
+{
+    uint32_t notes = keys_chord ? fm1_in.notes & keys_mod_mask : 0u;
+    if (notes != chord_now.notes && chord_now.key != KEY_NONE) {
+        pkt_t *p = &chord_now.pkt;
+        p->v[PV_CH_TYPE] = (int8_t)chord_key_type(base->v[PV_CH_TYPE], p->v[PV_CH_SCALE], p->v[PV_CH_DEG], notes);
+        if (p->v[PV_ARP_MODE] != ARP_OFF)
+            arp_key_change(&arps[keys_track], p, chord_now.key);
+        else
+            voice_chord_change(p, chord_now.key);
+    }
+    chord_now.notes = notes;
+}
+
 static void keys_block(void)
 {
     static uint32_t held;
-    uint32_t now = keys_play ? fm1_in.notes & keys_mask : 0u, changed = now ^ held, k, i;
+    uint32_t now = keys_play ? fm1_in.notes & keys_mask : 0u, changed = now ^ held, k;
     const sound_t *base = &sounds[patterns[seq.playing].track[keys_track].base];
+    int latch = base->v[PV_ARP_LATCH] != 0;
     held = now;
-    if (base->v[PV_ARP_MODE] == ARP_OFF || !base->v[PV_ARP_LATCH])
+    if (base->v[PV_ARP_MODE] == ARP_OFF || !latch)
         arp_remove_released(&arps[keys_track]);
+    if (!latch)
+        keys_release_latched();
     for (k = 0; changed; k++, changed >>= 1) {
         if (!(changed & 1u))
             continue;
         if ((now >> k) & 1u) {
             pkt_t p = *base;
-            p.v[PV_NOTE] = (int8_t)keys_note(k);
+            if (keys_chord) {
+                if (!chord_keys_press(&chord_now.press, &p, k, fm1_in.notes & keys_mod_mask, keys_octave))
+                    continue;
+                if (chord_now.key != KEY_NONE)           /* a new press wins */
+                    keys_note_off(chord_now.key, 0);
+                chord_now.key = (uint8_t)k;
+                chord_now.pkt = p;
+            } else {
+                p.v[PV_NOTE] = (int8_t)keys_note(k);
+            }
+            if (keys_chord || !(now & ~(1u << k)))
+                keys_release_latched();
             if (p.v[PV_ARP_MODE] != ARP_OFF)
                 arp_note_on(&arps[keys_track], &p, k, 0, keys_arp_wait(&p));
             else
-                voice_trigger(&p, k, 0);
-        } else {
-            voice_release_key(k);
-            for (i = 0; i < NTRK; i++)
-                arp_key_off(&arps[i], k);
+                voice_trigger_chord(&p, k, 0);
+        } else if (!keys_chord || k == chord_now.key) {
+            keys_note_off(k, latch && (arp_is_strum(base->v[PV_ARP_MODE]) || (keys_chord && base->v[PV_ARP_MODE] == ARP_OFF)));
+            chord_now.key = KEY_NONE;
         }
     }
+    keys_chord_modifiers(base);
 }
 
 static inline int32_t abs_max(int32_t peak, int32_t x)

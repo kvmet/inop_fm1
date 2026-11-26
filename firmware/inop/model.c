@@ -183,6 +183,147 @@ static void packet_resolve(pkt_t *p, const sound_t *pool, const track_pat_t *t, 
         p->v[t->locks[i].id] = t->locks[i].value;
 }
 
+static const uint8_t CH_SCALE_STEPS[CH_SCALES][7] = {
+    [CH_MAJ] = {0, 2, 4, 5, 7, 9, 11},
+    [CH_DOR] = {0, 2, 3, 5, 7, 9, 10},
+    [CH_PHR] = {0, 1, 3, 5, 7, 8, 10},
+    [CH_LYD] = {0, 2, 4, 6, 7, 9, 11},
+    [CH_MIX] = {0, 2, 4, 5, 7, 9, 10},
+    [CH_MIN] = {0, 2, 3, 5, 7, 8, 10},
+    [CH_LOC] = {0, 1, 3, 5, 6, 8, 10},
+    [CH_HARM] = {0, 2, 3, 5, 7, 8, 11},
+    [CH_MELO] = {0, 2, 3, 5, 7, 9, 11},
+};
+
+typedef struct { uint8_t n; int8_t tone[5]; } ch_type_t;
+static const ch_type_t CH_TYPE_TONES[CH_TYPES] = {
+    [CH_TRI] = {3, {0, 2, 4}},
+    [CH_7TH] = {4, {0, 2, 4, 6}},
+    [CH_9TH] = {5, {0, 2, 4, 6, 8}},
+    [CH_6TH] = {4, {0, 2, 4, 5}},
+    [CH_ADD9] = {4, {0, 2, 4, 8}},
+    [CH_SUS2] = {3, {0, 1, 4}},
+    [CH_SUS4] = {3, {0, 3, 4}},
+    [CH_5TH] = {2, {0, 4}},
+    [CH_FIX_MAJ] = {3, {0, 4, 7}},
+    [CH_FIX_MIN] = {3, {0, 3, 7}},
+    [CH_FIX_MAJ7] = {4, {0, 4, 7, 11}},
+    [CH_FIX_MIN7] = {4, {0, 3, 7, 10}},
+    [CH_FIX_DOM7] = {4, {0, 4, 7, 10}},
+    [CH_FIX_DIM] = {3, {0, 3, 6}},
+    [CH_FIX_DIM7] = {4, {0, 3, 6, 9}},
+    [CH_FIX_AUG] = {3, {0, 4, 8}},
+};
+
+/* semitones from the key to a scale step, which can be below the key or octaves above it */
+static int32_t scale_semitones(int32_t scale, int32_t degree)
+{
+    int32_t octave = degree >= 0 ? degree / 7 : -((6 - degree) / 7);
+    return 12 * octave + CH_SCALE_STEPS[clamp(scale, 0, CH_SCALES - 1)][degree - 7 * octave];
+}
+
+/* the notes a packet plays: NOTE is the key, DEG the scale step of the root. Tones stay in chord order, with a bass first. Returns the count */
+static uint32_t chord_notes(const pkt_t *p, int8_t out[CHORD_NOTES])
+{
+    int32_t key = p->v[PV_NOTE], scale = p->v[PV_CH_SCALE], degree = p->v[PV_CH_DEG], voice = p->v[PV_CH_VOICE];
+    int32_t type = clamp(p->v[PV_CH_TYPE], CH_OFF, CH_TYPES - 1), bass = p->v[PV_CH_BASS], notes[CHORD_NOTES], lowest;
+    uint32_t n = 0, i;
+    if (type == CH_OFF) {
+        notes[n++] = key + scale_semitones(scale, degree);
+    } else {
+        const ch_type_t *t = &CH_TYPE_TONES[type];
+        for (i = 0; i < t->n; i++)
+            notes[n++] = key + (type < CH_FIX_MAJ ? scale_semitones(scale, degree + t->tone[i]) : scale_semitones(scale, degree) + t->tone[i]);
+    }
+    for (; voice && n > 1u; voice += voice > 0 ? -1 : 1) {       /* up moves the lowest note an octave up, down moves the highest an octave down */
+        uint32_t at = 0;
+        for (i = 1; i < n; i++)
+            if (voice > 0 ? notes[i] < notes[at] : notes[i] > notes[at])
+                at = i;
+        notes[at] += voice > 0 ? 12 : -12;
+    }
+    lowest = notes[0];
+    for (i = 1; i < n; i++)
+        lowest = notes[i] < lowest ? notes[i] : lowest;
+    if (bass > 0) {
+        int32_t note = key + scale_semitones(scale, clamp(bass, 1, CH_BASS_MAX) - 1);
+        while (note >= lowest)
+            note -= 12;
+        while (note + 12 < lowest)
+            note += 12;
+        out[0] = (int8_t)clamp(note, 0, 127);
+        for (i = 0; i < n; i++)
+            out[i + 1u] = (int8_t)clamp(notes[i], 0, 127);
+        return n + 1u;
+    }
+    for (i = 0; i < n; i++)
+        out[i] = (int8_t)clamp(notes[i], 0, 127);
+    return n;
+}
+
+static int chord_has(const int8_t *notes, uint32_t n, int32_t note)
+{
+    uint32_t i;
+    for (i = 0; i < n; i++)
+        if (notes[i] == note)
+            return 1;
+    return 0;
+}
+
+/* CHORD key mode: the black keys from the left, each a bit in fm1_in.notes */
+enum { CHORD_KEY_7TH = 1, CHORD_KEY_9TH = 3, CHORD_KEY_6TH = 5, CHORD_KEY_SUS2 = 8, CHORD_KEY_SUS4 = 10, CHORD_KEY_FLIP = 13, CHORD_KEY_DOM7 = 15, CHORD_KEY_DIM = 17, CHORD_KEY_AUG = 20, CHORD_KEY_SLASH = 22 };
+#define CHORD_MOD_KEYS (1u << CHORD_KEY_7TH | 1u << CHORD_KEY_9TH | 1u << CHORD_KEY_6TH | 1u << CHORD_KEY_SUS2 | 1u << CHORD_KEY_SUS4 | 1u << CHORD_KEY_FLIP | 1u << CHORD_KEY_DOM7 | 1u << CHORD_KEY_DIM | 1u << CHORD_KEY_AUG | 1u << CHORD_KEY_SLASH)
+
+typedef struct { uint8_t bass; } chord_keys_t;   /* bass: the slash bass while the slash key stays down, or 0 */
+
+/* white keys by letter, as if in C: every C is the key */
+static int32_t chord_key_degree(uint32_t k)
+{
+    static const int8_t DEGREE_OF_PITCH_CLASS[12] = {0, -1, 1, -1, 2, 3, -1, 4, -1, 5, -1, 6};
+    return DEGREE_OF_PITCH_CLASS[(5u + k) % 12u] + 7 * ((int32_t)((5u + k) / 12u) - 1);
+}
+
+/* with no type on the sound, a key plays a triad. The rightmost modifier held wins, and FLIP takes 7TH along */
+static int32_t chord_key_type(int32_t sound_type, int32_t scale, int32_t degree, uint32_t notes)
+{
+    static const struct { uint8_t key, type; } PLAIN[] = {
+        {CHORD_KEY_SUS4, CH_SUS4}, {CHORD_KEY_SUS2, CH_SUS2}, {CHORD_KEY_6TH, CH_6TH}, {CHORD_KEY_9TH, CH_9TH}, {CHORD_KEY_7TH, CH_7TH},
+    };
+    uint32_t i;
+    if (notes >> CHORD_KEY_AUG & 1u)
+        return CH_FIX_AUG;
+    if (notes >> CHORD_KEY_DIM & 1u)
+        return CH_FIX_DIM;
+    if (notes >> CHORD_KEY_DOM7 & 1u)
+        return CH_FIX_DOM7;
+    if (notes >> CHORD_KEY_FLIP & 1u) {
+        int major = scale_semitones(scale, degree + 2) - scale_semitones(scale, degree) == 4, seventh = notes >> CHORD_KEY_7TH & 1u;
+        return major ? (seventh ? CH_FIX_MIN7 : CH_FIX_MIN) : (seventh ? CH_FIX_MAJ7 : CH_FIX_MAJ);
+    }
+    for (i = 0; i < NELEM(PLAIN); i++)
+        if (notes >> PLAIN[i].key & 1u)
+            return PLAIN[i].type;
+    return sound_type != CH_OFF ? sound_type : CH_TRI;
+}
+
+/* turns a press of white key k into its chord on p, which starts as the sound. 0: the press only chose a slash bass, so nothing sounds */
+static int chord_keys_press(chord_keys_t *c, pkt_t *p, uint32_t k, uint32_t notes, int32_t octave)
+{
+    int32_t degree = chord_key_degree(k);
+    if (!(notes >> CHORD_KEY_SLASH & 1u)) {
+        c->bass = 0;
+    } else if (!c->bass) {
+        c->bass = (uint8_t)((degree + 7) % 7 + 1);
+        return 0;
+    }
+    degree = clamp(degree + 7 * octave, -CH_DEG_MAX, CH_DEG_MAX);
+    p->v[PV_CH_TYPE] = (int8_t)chord_key_type(p->v[PV_CH_TYPE], p->v[PV_CH_SCALE], degree, notes);
+    p->v[PV_CH_DEG] = (int8_t)degree;
+    if (c->bass)
+        p->v[PV_CH_BASS] = (int8_t)c->bass;
+    return 1;
+}
+
 /* does this step set this value for itself? */
 static int step_value_locked(const track_pat_t *t, uint32_t step, uint32_t id)
 {

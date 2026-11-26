@@ -38,12 +38,13 @@ static const page_t PAGES[] = {
     {"STEP", {ID_NONE, ID_CHANCE, ID_HITS, ID_TIME, ID_NONE, ID_NONE}, {"", "CHANCE", "RATCH", "TIME", "", ""}},
     {"MAST", {ID_GLOBAL(G_MST_WIDTH), ID_GLOBAL(G_MST_COMP), ID_GLOBAL(G_MST_ATTACK), ID_GLOBAL(G_MST_RELEASE), ID_GLOBAL(G_MST_TILT), ID_GLOBAL(G_MST_DRIVE)}, {"WIDTH", "COMP", "ATK", "REL", "TILT", "DRIVE"}},
     {"SYS", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
+    {"CHRD", {PV_CH_VOICE, PV_NOTE, PV_CH_SCALE, PV_CH_DEG, PV_CH_TYPE, PV_CH_BASS}, {"VOICE", "KEY", "SCALE", "DEG", "TYPE", "BASS"}},
     {"ARP", {ID_NONE, PV_ARP_MODE, PV_ARP_RATE, PV_ARP_RANGE, PV_ARP_GATE, PV_ARP_LATCH}, {"", "MODE", "RATE", "RANGE", "GATE", "LATCH"}},
     {"SAVE", {ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE, ID_NONE}, {"", "", "", "", "", ""}},
     {"TRK", {ID_NONE, ID_LENGTH, ID_BASE, ID_SWING, ID_HUMAN, ID_NONE}, {"", "LENGTH", "SOUND", "SWING", "HUMAN", ""}},
 };
 
-enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_MOD2, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_SENDS, PG_FOLLOWER, PG_STEP, PG_MASTER, PG_SYSTEM, PG_ARP, PG_SAVE, PG_TRACK };
+enum { PG_HOME, PG_AMP, PG_FILTER, PG_MOD, PG_MOD2, PG_FX, PG_LFO1, PG_LFO2, PG_SLOTS, PG_E1, PG_E2, PG_GLOBAL, PG_SENDS, PG_FOLLOWER, PG_STEP, PG_MASTER, PG_SYSTEM, PG_CHORD, PG_ARP, PG_SAVE, PG_TRACK };
 _Static_assert(PG_TRACK + 1 == NELEM(PAGES), "PG_ names follow PAGES");
 
 /* a page button's first press shows its group's last page; each next press moves through the group */
@@ -56,7 +57,7 @@ static const page_group_t GROUPS[] = {
     {B_FX, 3, {PG_FILTER, PG_FX, PG_SENDS}},
     {B_LFO, 4, {PG_LFO1, PG_LFO2, PG_SLOTS, PG_FOLLOWER}},
     {B_GLO, 3, {PG_GLOBAL, PG_MASTER, PG_SYSTEM}},
-    {B_ARP, 1, {PG_ARP}},
+    {B_ARP, 2, {PG_CHORD, PG_ARP}},
     {B_SAVE, 1, {PG_SAVE}},
 };
 #define NGROUPS NELEM(GROUPS)
@@ -93,6 +94,7 @@ static struct {
     uint32_t bpm, rec_t0, held_keys, track_t0;
     uint32_t drop_seen, drop_t0, notice_t0;
     uint8_t route_used;          /* this press of LFO or ENV made a route: its release must not change the page */
+    chord_keys_t dub_chord;      /* overdub's own view of the keys, as keys_block has for the sound */
     char notice[24];             /* the status line shows this for NOTICE_MS */
 } ui;
 enum { SOUND_COPY_NONE, SOUND_COPY_CHOOSE, SOUND_COPY_CONFIRM };
@@ -195,9 +197,13 @@ static const char *const NAMES_MODE[LFO_MODES] = {"RTRG", "FREE", "SYNC"};
 static const char *const NAMES_LFO_SYNC[LFO_SYNC_RATES] = {"1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2T", "1/2", "1 BAR", "2 BAR", "4 BAR", "8 BAR", "16BAR"};
 static const char *const NAMES_ENGINE[ENGINES] = {"FM", "PERC", "SWARM", "WAVE"};
 static const char *const NAMES_PRIO[PRIOS] = {"XXLO", "XLO", "LOW", "NORM", "HIGH", "XHI", "XXHI"};
-static const char *const NAMES_ARP_MODE[ARP_MODES] = {"OFF", "UP", "DOWN", "UPDN", "PLAY", "RAND"};
-static const char *const NAMES_ARP_RATE[ARP_RATES] = {"1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4"};
+static const char *const NAMES_ARP_MODE[ARP_MODES] = {"OFF", "UP", "DOWN", "UPDN", "PLAY", "RAND", "STRU", "STRD"};
+static const char *const NAMES_CH_SCALE[CH_SCALES] = {"MAJ", "DOR", "PHR", "LYD", "MIX", "MIN", "LOC", "HARM", "MELO"};
+static const char *const NAMES_CH_TYPE[CH_TYPES] = {"OFF", "TRI", "7TH", "9TH", "6TH", "ADD9", "SUS2", "SUS4", "5TH", "MAJ", "MIN", "MAJ7", "MIN7", "DOM7", "DIM", "DIM7", "AUG"};
+static const char *const NAMES_CH_BASS[CH_BASS_MAX + 1] = {"OFF", "I", "II", "III", "IV", "V", "VI", "VII"};
+static const char *const NAMES_ARP_RATE[ARP_RATES] = {"1/96", "1/48", "1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4"};
 static const char *const NAMES_OFF_ON[2] = {"OFF", "ON"};
+static const char *const NAMES_PITCH_CLASS[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static const char *const NAMES_WAVE[WAVE_TABLES] = {"HARM", "PWM", "SYNC", "VOX", "FOLD", "DIGI", "METAL", "GRIT"};
 static const char *const LABELS_WAVE[7] = {"WAVE", "WARP", "PITCH2", "CROSS", "OSC2", "DETUNE", "NOISE"};
 
@@ -231,6 +237,9 @@ static const char *const *value_names(uint32_t id, int32_t *count)
     if (id == PV_ARP_MODE) { *count = ARP_MODES; return NAMES_ARP_MODE; }
     if (id == PV_ARP_RATE) { *count = ARP_RATES; return NAMES_ARP_RATE; }
     if (id == PV_ARP_LATCH) { *count = 2; return NAMES_OFF_ON; }
+    if (id == PV_CH_SCALE) { *count = CH_SCALES; return NAMES_CH_SCALE; }
+    if (id == PV_CH_TYPE) { *count = CH_TYPES; return NAMES_CH_TYPE; }
+    if (id == PV_CH_BASS) { *count = CH_BASS_MAX + 1; return NAMES_CH_BASS; }
     if (id == PV_E0 && ui_engine() == ENGINE_WAVE) { *count = WAVE_TABLES; return NAMES_WAVE; }
     if (id == PV_E0 && ui_engine() == ENGINE_PERC) { *count = PERC_MODES; return NAMES_PERC; }
     if (id == PV_E0 && ui_engine() == ENGINE_SWARM) { *count = SWARM_MODES; return NAMES_SWARM; }
@@ -273,6 +282,10 @@ static int32_t value_clamp(uint32_t id, int32_t v)
         return clamp(v, 1, LEN_HOLD);
     if (id == PV_ARP_RANGE)
         return clamp(v, 1, ARP_RANGE_MAX);
+    if (id == PV_CH_DEG)
+        return clamp(v, -CH_DEG_MAX, CH_DEG_MAX);
+    if (id == PV_CH_VOICE)
+        return clamp(v, -CH_VOICE_MAX, CH_VOICE_MAX);
     if (value_names(id, &count))
         return clamp(v, 0, count - 1);
     if (id == PV_PAN)
@@ -319,8 +332,8 @@ static void dub_service(uint32_t rec)
     ui.edit_pat = seq.playing;
 }
 
-/* REC + a track key picks the track while the keys play notes, so that press must not also play the black key's note */
-static uint32_t keys_note_mask(uint32_t rec) { return rec ? white_keys : ((1u << 27) - 1u) & ~(1u << black_key[SHIFT_BLACK]); }
+/* REC + a track key picks the track while the keys play notes, and in CHORD mode the black keys change the chord, so that press must not also play the black key's note */
+static uint32_t keys_note_mask(uint32_t rec) { return rec || keys_chord ? white_keys : ((1u << 27) - 1u) & ~(1u << black_key[SHIFT_BLACK]); }
 
 static void dub_enter(void)
 {
@@ -344,10 +357,17 @@ static void dub_exit(void)
 static void dub_key_down(uint32_t k)
 {
     track_pat_t *t = dub_track();
-    uint32_t step = seq_nearest_step(&seq, ui.track, t->length);
-    uint32_t irq = irq_save();
-    t->steps[step].on = 1;
-    t->steps[step].note = (uint8_t)keys_note(k);
+    uint32_t step = seq_nearest_step(&seq, ui.track, t->length), irq;
+    pkt_t played = sounds[t->base];
+    if (keys_chord && !chord_keys_press(&ui.dub_chord, &played, k, fm1_in.notes & keys_mod_mask, keys_octave))
+        return;
+    irq = irq_save();
+    if (!keys_chord) {
+        t->steps[step].on = 1;
+        t->steps[step].note = (uint8_t)keys_note(k);
+    } else if (dub_chord_write(t, step, &played, sounds)) {
+        dub.full = 1;
+    }
     if (step != seq.pos[ui.track])
         seq.skip[ui.track] = (uint8_t)(step + 1u);
     irq_restore(irq);
@@ -494,7 +514,7 @@ static void key_down(uint32_t k, uint32_t rec)
                 keys_track = ui.track;
                 dub.n = 0;
             }
-        } else if (ui.dub && pos != 16u + SHIFT_BLACK) {
+        } else if (ui.dub && (keys_chord ? pos < 16u : pos != 16u + SHIFT_BLACK)) {
             dub_key_down(k);
         }
         return;
@@ -764,7 +784,8 @@ static void ui_input(void)
         if ((changed & ~now) >> k & 1u)
             key_up(k);
     if (released >> B_PLAY & 1u && !ui.play_used && ui.sound_copy != SOUND_COPY_CONFIRM) {
-        keys_play = !keys_play;
+        keys_chord = keys_play && !keys_chord;   /* STEPS, NOTES, CHORD, and round */
+        keys_play = !keys_play || keys_chord;
         ui.pattern_mode = 0;
     }
     if (ui.sound_copy == SOUND_COPY_CONFIRM) {
@@ -802,6 +823,7 @@ static void ui_input(void)
     if (edges >> B_SEQ & 1u && !ui.dub)
         ui.pattern_mode = !ui.pattern_mode;
     keys_mask = ui.pattern_mode ? 0u : keys_note_mask(rec);
+    keys_mod_mask = ui.pattern_mode || rec ? 0u : CHORD_MOD_KEYS;
     if (edges >> B_LFO & 1u || edges >> B_ENV & 1u)
         ui.route_used = 0;
     for (k = 0; k < NGROUPS; k++) {
@@ -847,6 +869,9 @@ static void ui_leds(void)
         if (ui.pattern_mode) {
             if (i == seq.playing || (i == seq.next && blink) || (i == ui.edit_pat && blink))
                 level = FM1_LV_LIT;
+        } else if (keys_chord) {
+            if (chord_key_degree(white_key[i]) % 7 == 0)
+                level = FM1_LV_HALF;                     /* the key */
         } else if (!keys_play) {
             uint32_t st = i + ui.view * 16u, in_track = st < t->length, on = in_track && t->steps[st].on;
             uint32_t bright_group = !((i >> 2) & 1u);    /* steps 1-4 and 9-12, as on the screen */
@@ -867,11 +892,11 @@ static void ui_leds(void)
             uint32_t p = 16u + i;
             on = p == seq.playing || (p == seq.next && blink) || (p == ui.edit_pat && blink);
         } else {
-            on = (i == ui.track && (!ui.dub || blink)) || (i == SHIFT_BLACK && ui_shift());
+            on = keys_chord ? (fm1_in.notes >> black_key[i] & 1u) != 0u : (i == ui.track && (!ui.dub || blink)) || (i == SHIFT_BLACK && ui_shift());
         }
         fm1_led_key(KEY_LED(black_key[i]), (int)on);
     }
-    fm1_led_key(B_PLAY, keys_play);
+    fm1_led_key(B_PLAY, keys_chord ? (int)blink : keys_play);
     fm1_led_key(B_SEQ, ui.pattern_mode);
     fm1_led_key(B_REC, ui.sound_copy == SOUND_COPY_CONFIRM || ui.dub ? (int)blink : (fm1_in.buttons >> B_REC) & 1);
     for (i = 0; i < NGROUPS; i++)
@@ -1094,6 +1119,22 @@ static void ui_step_service(void)
     }
 }
 
+/* C4 is MIDI note 60 */
+static char *put_note(char *s, int32_t note)
+{
+    s = put_text(s, NAMES_PITCH_CLASS[note % 12]);
+    return put_int(s, note / 12 - 1);
+}
+
+/* a scale step as a numeral, with the octaves it is away from the key */
+static void put_degree(char *s, int32_t degree)
+{
+    int32_t octave = degree >= 0 ? degree / 7 : -((6 - degree) / 7);
+    s = put_text(s, NAMES_CH_BASS[degree - 7 * octave + 1]);
+    if (octave)
+        put_int(put_text(s, octave > 0 ? "+" : ""), octave);
+}
+
 static void value_text(char *b, uint32_t id)
 {
     int32_t count;
@@ -1103,6 +1144,10 @@ static void value_text(char *b, uint32_t id)
         b[0] = 0;
     else if (id == ID_TIME && ui_value(id) > 0)
         put_int(put_text(b, "+"), ui_value(id));
+    else if (id == PV_NOTE && ui_page() == &PAGES[PG_CHORD])
+        put_note(b, ui_value(id));
+    else if (id == PV_CH_DEG)
+        put_degree(b, ui_value(id));
     else if ((id == PV_LFO1_RATE && ui_value(PV_LFO1_PHASE) == LFO_SYNC) || (id == PV_LFO2_RATE && ui_value(PV_LFO2_PHASE) == LFO_SYNC))
         put_text(b, NAMES_LFO_SYNC[lfo_sync_rate_index(ui_value(id))]);
     else if (names)
@@ -1433,6 +1478,25 @@ static void free_perc(const pkt_t *p)
     }
 }
 
+/* the chord by name, then the notes it plays */
+static void free_chord(const pkt_t *p)
+{
+    char b[48], *s;
+    int8_t notes[CHORD_NOTES];
+    uint32_t n = chord_notes(p, notes), i;
+    int32_t key = p->v[PV_NOTE], type = clamp(p->v[PV_CH_TYPE], CH_OFF, CH_TYPES - 1);
+    s = put_text(b, NAMES_PITCH_CLASS[(key + scale_semitones(p->v[PV_CH_SCALE], p->v[PV_CH_DEG]) + 120) % 12]);
+    if (type != CH_OFF)
+        s = put_text(put_text(s, " "), NAMES_CH_TYPE[type]);
+    if (p->v[PV_CH_BASS] > 0)
+        put_text(put_text(s, " /"), NAMES_PITCH_CLASS[(key + scale_semitones(p->v[PV_CH_SCALE], p->v[PV_CH_BASS] - 1)) % 12]);
+    cv_text(4, 10, &AF_M, b, T_THEME);
+    s = b;
+    for (i = 0; i < n; i++)
+        s = put_text(put_note(s, notes[i]), " ");
+    cv_text(4, 34, &AF_S, b, T_MID);
+}
+
 /* 16 steps of what the arp's own order does with C, E and G: a bar per hit, as wide as its gate */
 static void free_arp(const pkt_t *p)
 {
@@ -1444,9 +1508,9 @@ static void free_arp(const pkt_t *p)
         cv_text(4, 24, &AF_M, "ARP OFF", T_MID);
         return;
     }
-    for (hit = 0; hit * sixths < 16u * 6u; hit++) {
+    for (hit = 0; hit * sixths < 16u * 6u && (!arp_is_strum(mode) || hit < 3u * range); hit++) {
         uint32_t at = arp_position(mode, 3u, range, hit, (hit + 1u) * 2654435761u >> 16);
-        int32_t w = (int32_t)sixths * STEP_W * gate / (6 * 127), semitone = CHORD[at % 3u] + 12 * (int32_t)(at / 3u);
+        int32_t w = arp_is_strum(mode) ? 16 * STEP_W - (int32_t)(hit * sixths) * STEP_W / 6 : (int32_t)sixths * STEP_W * gate / (6 * 127), semitone = CHORD[at % 3u] + 12 * (int32_t)(at / 3u);
         cv_rect(4 + (int32_t)(hit * sixths) * STEP_W / 6, CURVE_TOP + CURVE_H - BAR_H - semitone * SEMITONE_PX, w < 1 ? 1 : w, BAR_H, T_THEME);
     }
 }
@@ -1570,7 +1634,7 @@ static void free_page_tabs(const page_t *pg)
 /* the pages whose drawing reads the packet redraw when it changes */
 static int free_reads_packet(const page_t *pg)
 {
-    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_MOD2] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2] || pg == &PAGES[PG_ARP];
+    return pg == &PAGES[PG_FILTER] || pg == &PAGES[PG_AMP] || pg == &PAGES[PG_MOD] || pg == &PAGES[PG_MOD2] || pg == &PAGES[PG_LFO1] || pg == &PAGES[PG_LFO2] || pg == &PAGES[PG_SLOTS] || pg == &PAGES[PG_E1] || pg == &PAGES[PG_E2] || pg == &PAGES[PG_CHORD] || pg == &PAGES[PG_ARP];
 }
 
 static void draw_free(const page_t *pg, const track_pat_t *t)
@@ -1639,6 +1703,8 @@ static void draw_free(const page_t *pg, const track_pat_t *t)
             cv_text(4, (int32_t)(FOLLOWER_BAR_Y - FREE_Y) - 1, &AF_S, "FOL", T_MID);
             follower_bar_drawn = 0;
         }
+        else if (pg == &PAGES[PG_CHORD])
+            free_chord(&p);
         else if (pg == &PAGES[PG_ARP])
             free_arp(&p);
         if (ui.sound_copy == SOUND_COPY_NONE)
@@ -1675,7 +1741,7 @@ static void draw_title(const page_t *pg)
         draw_dub_word();
     else
         line_drawn[LINE_DUB].text[0] = 0;
-    s = put_text(b, ui.dub ? "" : ui.pattern_mode ? "PATT " : keys_play ? "NOTES " : "STEPS ");
+    s = put_text(b, ui.dub ? "" : ui.pattern_mode ? "PATT " : keys_chord ? "CHORD " : keys_play ? "NOTES " : "STEPS ");
     s = put_text(s, pg->name);
     s = put_text(s, " T");
     s = put_int(s, ui.track + 1);

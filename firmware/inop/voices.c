@@ -177,6 +177,18 @@ static void voice_trigger(const pkt_t *p, uint32_t key, uint32_t hold_blocks)
     }
 }
 
+/* one voice per chord note. The notes that start last are the last an equal priority steals, so the root goes near the end */
+static void voice_trigger_chord(const pkt_t *p, uint32_t key, uint32_t hold_blocks)
+{
+    int8_t notes[CHORD_NOTES];
+    uint32_t i = chord_notes(p, notes);
+    while (i--) {
+        pkt_t q = *p;
+        q.v[PV_NOTE] = notes[i];
+        voice_trigger(&q, key, hold_blocks);
+    }
+}
+
 static void voice_release_key(uint32_t key)
 {
     uint32_t i;
@@ -199,6 +211,8 @@ static int pkt_same(const pkt_t *a, const pkt_t *b)
 static uint32_t voice_trigger_step(const pkt_t *p, uint32_t track, uint32_t samples_per_step, uint32_t hits)
 {
     uint32_t key = KEY_TRACK(track), i, held = p->v[PV_LEN] == (int8_t)LEN_HOLD, span = held ? 1u : (uint32_t)p->v[PV_LEN];
+    int8_t notes[CHORD_NOTES];
+    uint32_t n = chord_notes(p, notes), found = 0, c;
     if (p->v[PV_ARP_MODE] != ARP_OFF) {
         voice_release_key(key);
         arp_note_on(&arps[track], p, ARP_OWNER_STEP, held ? 0u : span * samples_per_step, 0);
@@ -207,14 +221,22 @@ static uint32_t voice_trigger_step(const pkt_t *p, uint32_t track, uint32_t samp
     arp_end_held(&arps[track]);
     if (!held || hits > 1u) {
         voice_release_key(key);
-        voice_trigger(p, KEY_NONE, span * samples_per_step / hits / CTL);
+        voice_trigger_chord(p, KEY_NONE, span * samples_per_step / hits / CTL);
         return span;
     }
-    for (i = 0; i < NVOICE; i++)
-        if (voices[i].active && voices[i].key == key && voices[i].chain.amp_env.stage < ENV_RELEASE && pkt_same(&voices[i].pkt, p))
-            return span;
+    for (c = 0; c < n; c++) {
+        pkt_t q = *p;
+        q.v[PV_NOTE] = notes[c];
+        for (i = 0; i < NVOICE; i++)
+            if (voices[i].active && voices[i].key == key && voices[i].chain.amp_env.stage < ENV_RELEASE && pkt_same(&voices[i].pkt, &q)) {
+                found++;
+                break;
+            }
+    }
+    if (found == n)
+        return span;
     voice_release_key(key);
-    voice_trigger(p, key, 0);
+    voice_trigger_chord(p, key, 0);
     return span;
 }
 
@@ -235,9 +257,30 @@ static void voices_hold_service(const pattern_t *pattern)
     arp_end_held(&arps[k]);
 }
 
-static void voice_arp_hit(const pkt_t *p, uint32_t hold_blocks)
+/* a hit with no end of its own lasts until its owner lets go */
+static void voice_arp_hit(const arp_t *a, const pkt_t *p, uint32_t owner, uint32_t hold_blocks)
 {
-    voice_trigger(p, KEY_NONE, hold_blocks);
+    voice_trigger(p, hold_blocks ? KEY_NONE : owner == ARP_OWNER_STEP ? KEY_TRACK((uint32_t)(a - arps)) : owner, hold_blocks);
+}
+
+/* a held chord changes type: only the notes that differ stop or start */
+static void voice_chord_change(const pkt_t *p, uint32_t key)
+{
+    int8_t notes[CHORD_NOTES];
+    uint32_t n = chord_notes(p, notes), i, c;
+    for (i = 0; i < NVOICE; i++)
+        if (voices[i].active && voices[i].key == key && voices[i].chain.amp_env.stage < ENV_RELEASE && !chord_has(notes, n, voices[i].pkt.v[PV_NOTE]))
+            voice_release(&voices[i]);
+    for (c = n; c--;) {
+        int sounding = 0;
+        for (i = 0; i < NVOICE; i++)
+            sounding |= voices[i].active && voices[i].key == key && voices[i].chain.amp_env.stage < ENV_RELEASE && voices[i].pkt.v[PV_NOTE] == notes[c];
+        if (!sounding) {
+            pkt_t q = *p;
+            q.v[PV_NOTE] = notes[c];
+            voice_trigger(&q, key, 0);
+        }
+    }
 }
 
 static void voices_silence(void)

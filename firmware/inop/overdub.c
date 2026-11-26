@@ -49,6 +49,24 @@ static void dub_expire(dub_t *d, uint32_t now, uint32_t window_ms, int keep)
     d->n = (uint8_t)n;
 }
 
+/* a played chord as locks: only what differs from the step's sound, so the step still follows later edits of the sound. 0, or -1 when the lock memory is full */
+static int dub_chord_write(track_pat_t *t, uint32_t step, const pkt_t *played, const sound_t *pool)
+{
+    static const uint8_t IDS[] = {PV_CH_DEG, PV_CH_TYPE, PV_CH_BASS};
+    const step_t *s = &t->steps[step];
+    const sound_t *sound = &pool[s->sound != SOUND_NONE ? s->sound : t->base];
+    uint32_t i;
+    int result = 0;
+    for (i = 0; i < NELEM(IDS); i++) {
+        if (played->v[IDS[i]] == sound->v[IDS[i]])
+            lock_clear(t, step, IDS[i]);
+        else if (lock_set(t, step, IDS[i], played->v[IDS[i]]))
+            result = -1;
+    }
+    t->steps[step].on = 1;
+    return result;
+}
+
 /* a lock only changes its step's trigger, so a step that is off takes none */
 static void dub_write(dub_t *d, track_pat_t *t, uint32_t step)
 {

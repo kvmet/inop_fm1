@@ -3957,8 +3957,10 @@ static int8_t arp_heard[64];
 static uint32_t arp_heard_block[64], arp_heard_hold[64], arp_heard_n, arp_now;
 static int8_t arp_heard_cut[64];
 
-static void arp_capture(const pkt_t *p, uint32_t hold_blocks)
+static void arp_capture(const arp_t *a, const pkt_t *p, uint32_t owner, uint32_t hold_blocks)
 {
+    (void)a;
+    (void)owner;
     arp_heard[arp_heard_n] = p->v[PV_NOTE];
     arp_heard_cut[arp_heard_n] = p->v[PV_FLT_CUT];
     arp_heard_block[arp_heard_n] = arp_now;
@@ -4177,6 +4179,311 @@ static void test_arp_held_note(void)
     CHECK(a.n == 0u);
 }
 
+static void chord_expect(const pkt_t *p, const int8_t *want, uint32_t want_n, int line)
+{
+    int8_t notes[CHORD_NOTES];
+    uint32_t n = chord_notes(p, notes), i;
+    if (n != want_n)
+        printf("line %d: %u notes\n", line, n);
+    CHECK(n == want_n);
+    for (i = 0; i < n && i < want_n; i++) {
+        if (notes[i] != want[i])
+            printf("line %d: note %u is %d, want %d\n", line, i, notes[i], want[i]);
+        CHECK(notes[i] == want[i]);
+    }
+}
+#define CHORD_IS(p, ...) do { static const int8_t WANT[] = {__VA_ARGS__}; chord_expect((p), WANT, NELEM(WANT), __LINE__); } while (0)
+
+static void test_chord_notes(void)
+{
+    pkt_t p;
+    sound_init(&p, 0);
+    p.v[PV_NOTE] = 60;
+    CHORD_IS(&p, 60);                                   /* the default plays one note */
+    p.v[PV_CH_DEG] = 4;
+    CHORD_IS(&p, 67);                                   /* no type: one note that follows the key */
+    p.v[PV_CH_TYPE] = CH_TRI;
+    p.v[PV_CH_DEG] = 0;
+    CHORD_IS(&p, 60, 64, 67);                           /* C */
+    p.v[PV_CH_DEG] = 5;
+    CHORD_IS(&p, 69, 72, 76);                           /* vi: Am */
+    p.v[PV_CH_SCALE] = CH_MIN;
+    p.v[PV_CH_DEG] = 0;
+    CHORD_IS(&p, 60, 63, 67);                           /* the scale changes the stack: Cm */
+    p.v[PV_CH_DEG] = 5;
+    CHORD_IS(&p, 68, 72, 75);                           /* Ab */
+    p.v[PV_NOTE] = 62;
+    CHORD_IS(&p, 70, 74, 77);                           /* the key moves it: Bb in D minor */
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_DEG] = 0;
+    p.v[PV_CH_SCALE] = CH_MAJ;
+    p.v[PV_CH_DEG] = -1;
+    CHORD_IS(&p, 59, 62, 65);                           /* below the key: vii dim, an octave down */
+    p.v[PV_CH_DEG] = 1;
+    p.v[PV_CH_TYPE] = CH_7TH;
+    CHORD_IS(&p, 62, 65, 69, 72);                       /* Dm7 */
+    p.v[PV_CH_TYPE] = CH_9TH;
+    p.v[PV_CH_DEG] = 0;
+    CHORD_IS(&p, 60, 64, 67, 71, 74);                   /* Cmaj9 */
+    p.v[PV_CH_TYPE] = CH_FIX_DOM7;
+    p.v[PV_CH_DEG] = 1;
+    CHORD_IS(&p, 62, 66, 69, 72);                       /* a fixed type ignores the scale: D7 */
+    p.v[PV_CH_TYPE] = CH_SUS4;
+    p.v[PV_CH_DEG] = 0;
+    CHORD_IS(&p, 60, 65, 67);
+    p.v[PV_CH_TYPE] = CH_5TH;
+    CHORD_IS(&p, 60, 67);
+}
+
+static void test_chord_voice_and_bass(void)
+{
+    pkt_t p;
+    sound_init(&p, 0);
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_TRI;
+    p.v[PV_CH_VOICE] = 1;
+    CHORD_IS(&p, 72, 64, 67);                           /* the lowest goes up: first inversion */
+    p.v[PV_CH_VOICE] = 2;
+    CHORD_IS(&p, 72, 76, 67);
+    p.v[PV_CH_VOICE] = -1;
+    CHORD_IS(&p, 60, 64, 55);                           /* the highest goes down */
+    p.v[PV_CH_VOICE] = 0;
+    p.v[PV_CH_BASS] = 3;
+    CHORD_IS(&p, 52, 60, 64, 67);                       /* C/E: the bass is first and under the chord */
+    p.v[PV_CH_BASS] = 1;
+    CHORD_IS(&p, 48, 60, 64, 67);
+    p.v[PV_CH_BASS] = 0;
+    p.v[PV_CH_TYPE] = CH_OFF;
+    p.v[PV_CH_VOICE] = 3;
+    CHORD_IS(&p, 60);                                   /* one note has no inversions */
+    p.v[PV_CH_VOICE] = 0;
+    p.v[PV_NOTE] = 127;
+    p.v[PV_CH_DEG] = 36;
+    CHORD_IS(&p, 127);                                  /* stops at the top */
+    p.v[PV_NOTE] = 0;
+    p.v[PV_CH_DEG] = -36;
+    CHORD_IS(&p, 0);
+}
+
+static void test_chord_key_map(void)
+{
+    /* keys 0 to 26 run F3 to G5: letters as if in C */
+    CHECK(chord_key_degree(7) == 0);                    /* C */
+    CHECK(chord_key_degree(9) == 1);                    /* D */
+    CHECK(chord_key_degree(18) == 6);                   /* B */
+    CHECK(chord_key_degree(19) == 7);                   /* C an octave up */
+    CHECK(chord_key_degree(0) == -4);                   /* F an octave down */
+    CHECK(chord_key_degree(6) == -1);                   /* B below */
+    CHECK(chord_key_degree(26) == 11);                  /* G an octave up */
+}
+
+static void test_chord_key_types(void)
+{
+    pkt_t p;
+    chord_keys_t c = {0};
+    sound_init(&p, 0);
+    CHECK(chord_keys_press(&c, &p, 7, 0, 0) == 1);
+    CHECK(p.v[PV_CH_TYPE] == CH_TRI && p.v[PV_CH_DEG] == 0);   /* no type on the sound: a triad */
+    sound_init(&p, 0);
+    p.v[PV_CH_TYPE] = CH_7TH;
+    chord_keys_press(&c, &p, 9, 0, 1);
+    CHECK(p.v[PV_CH_TYPE] == CH_7TH && p.v[PV_CH_DEG] == 8);   /* the sound's type, and OCT is 7 scale steps */
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 0, 1u << CHORD_KEY_7TH) == CH_7TH);
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 0, 1u << CHORD_KEY_7TH | 1u << CHORD_KEY_SUS4) == CH_SUS4);   /* the rightmost wins */
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 0, 1u << CHORD_KEY_FLIP) == CH_FIX_MIN);    /* I is major: minor */
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 1, 1u << CHORD_KEY_FLIP) == CH_FIX_MAJ);    /* ii is minor: major */
+    CHECK(chord_key_type(CH_OFF, CH_MIN, 0, 1u << CHORD_KEY_FLIP) == CH_FIX_MAJ);    /* it reads the scale */
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 0, 1u << CHORD_KEY_FLIP | 1u << CHORD_KEY_7TH) == CH_FIX_MIN7);
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 1, 1u << CHORD_KEY_FLIP | 1u << CHORD_KEY_7TH) == CH_FIX_MAJ7);
+    CHECK(chord_key_type(CH_OFF, CH_MAJ, 0, 1u << CHORD_KEY_FLIP | 1u << CHORD_KEY_AUG) == CH_FIX_AUG);
+}
+
+static void test_chord_slash(void)
+{
+    pkt_t p;
+    chord_keys_t c = {0};
+    uint32_t slash = 1u << CHORD_KEY_SLASH;
+    sound_init(&p, 0);
+    CHECK(chord_keys_press(&c, &p, 11, slash, 0) == 0); /* E chooses the bass and does not sound */
+    CHECK(c.bass == 3u);
+    CHECK(chord_keys_press(&c, &p, 7, slash, 0) == 1);  /* C over it */
+    CHECK(p.v[PV_CH_BASS] == 3 && p.v[PV_CH_DEG] == 0);
+    sound_init(&p, 0);
+    CHECK(chord_keys_press(&c, &p, 9, slash, 0) == 1);  /* a pedal: it stays while the key is down */
+    CHECK(p.v[PV_CH_BASS] == 3 && p.v[PV_CH_DEG] == 1);
+    sound_init(&p, 0);
+    CHECK(chord_keys_press(&c, &p, 7, 0, 0) == 1);      /* slash up: gone */
+    CHECK(p.v[PV_CH_BASS] == 0 && c.bass == 0u);
+    CHECK(chord_keys_press(&c, &p, 0, slash, 0) == 0);  /* F below the key is still degree IV */
+    CHECK(c.bass == 4u);
+}
+
+static void test_chord_dub_write(void)
+{
+    track_pat_t *t = &patterns[0].track[0];
+    pkt_t played, out;
+    chord_keys_t c = {0};
+    reset();
+    played = pool[0];
+    chord_keys_press(&c, &played, 16, 1u << CHORD_KEY_7TH, 0);   /* A: vi7 */
+    CHECK(dub_chord_write(t, 3, &played, pool) == 0);
+    CHECK(t->steps[3].on && t->steps[3].note == STEP_INHERIT);
+    CHECK(t->nlock == 2u);                              /* DEG and TYPE */
+    packet_resolve(&out, pool, t, 3);
+    CHECK(out.v[PV_CH_DEG] == 5 && out.v[PV_CH_TYPE] == CH_7TH);
+    pool[0].v[PV_NOTE] = 62;
+    {
+        int8_t notes[CHORD_NOTES];
+        packet_resolve(&out, pool, t, 3);
+        CHECK(chord_notes(&out, notes) == 4u && notes[0] == 71);  /* the step follows a new key */
+    }
+    pool[0].v[PV_NOTE] = 60;
+    played = pool[0];
+    chord_keys_press(&c, &played, 7, 0, 0);             /* I: DEG is the sound's, so that lock goes */
+    CHECK(dub_chord_write(t, 3, &played, pool) == 0);
+    CHECK(t->nlock == 1u);
+    packet_resolve(&out, pool, t, 3);
+    CHECK(out.v[PV_CH_DEG] == 0 && out.v[PV_CH_TYPE] == CH_TRI);
+}
+
+static void test_chord_arp(void)
+{
+    arp_t a;
+    pkt_t p;
+    uint32_t i;
+    arp_start(&a, &p, ARP_UP, 1);
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_7TH;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, ARP_SPS * 8u, 0);
+    CHECK(a.n == 4u);
+    arp_run(&a, 4u * ARP_SPS / CTL, ARP_SPS);
+    CHECK(arp_heard[0] == 60 && arp_heard[1] == 64 && arp_heard[2] == 67 && arp_heard[3] == 71);
+    arp_start(&a, &p, ARP_UP, 1);                       /* HOLD: a chord must not end its own notes */
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_TRI;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, 0, 0);
+    CHECK(a.n == 3u);
+    arp_note_on(&a, &p, ARP_OWNER_STEP, 0, 0);
+    CHECK(a.n == 3u);
+    p.v[PV_CH_DEG] = 1;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, 0, 0);          /* the next chord ends a HOLD one */
+    CHECK(a.n == 3u && a.note[0].pkt.v[PV_NOTE] == 62);
+    arp_start(&a, &p, ARP_UP, 1);                       /* a key's chord all ends with the key */
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_9TH;
+    p.v[PV_CH_BASS] = 1;
+    arp_note_on(&a, &p, 5, 0, 0);
+    CHECK(a.n == 6u);
+    for (i = 0; i < a.n; i++)
+        CHECK(a.note[i].owner == 5u);
+    arp_key_off(&a, 5);
+    CHECK(a.n == 0u);
+    arp_start(&a, &p, ARP_UP, 1);                       /* a type change keeps the arp's place */
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_TRI;
+    arp_note_on(&a, &p, 5, 0, 0);
+    arp_run(&a, 2u * ARP_SPS / CTL, ARP_SPS);
+    p.v[PV_CH_TYPE] = CH_7TH;
+    arp_key_change(&a, &p, 5);
+    CHECK(a.n == 4u && a.pos == 2u);
+    p.v[PV_CH_TYPE] = CH_SUS4;
+    arp_key_change(&a, &p, 5);
+    CHECK(a.n == 3u && a.pos == 2u);                    /* E and B left */
+}
+
+static uint32_t strum_key[16], strum_hold[16];
+static int8_t strum_note[16];
+static uint32_t strum_n;
+static void strum_capture(const arp_t *a, const pkt_t *p, uint32_t owner, uint32_t hold_blocks)
+{
+    (void)a;
+    strum_note[strum_n] = p->v[PV_NOTE];
+    strum_key[strum_n] = owner;
+    strum_hold[strum_n++] = hold_blocks;
+}
+
+static void test_arp_strum(void)
+{
+    arp_t a;
+    pkt_t p;
+    uint32_t b;
+    arp_start(&a, &p, ARP_STRUM_UP, 1);
+    strum_n = 0;
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_TRI;
+    p.v[PV_ARP_RATE] = ARP_RATE_1_96;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, ARP_SPS * 4u, 0);
+    for (b = 0; b < 200u; b++)
+        arp_block(&a, CTL, ARP_SPS, strum_capture);
+    CHECK(strum_n == 3u);                               /* one pass */
+    CHECK(strum_note[0] == 60 && strum_note[1] == 64 && strum_note[2] == 67);
+    CHECK(strum_hold[0] == ARP_SPS * 4u / CTL);         /* each rings to the chord's end, whatever the gate */
+    CHECK(strum_hold[1] < strum_hold[0] && strum_hold[1] > ARP_SPS * 3u / CTL);
+    CHECK(a.n == 3u);
+    strum_n = 0;
+    arp_note_on(&a, &p, ARP_OWNER_STEP, ARP_SPS * 4u, 0);   /* the next chord strums again */
+    for (b = 0; b < 200u; b++)
+        arp_block(&a, CTL, ARP_SPS, strum_capture);
+    CHECK(strum_n == 3u);
+    arp_start(&a, &p, ARP_STRUM_DOWN, 1);
+    strum_n = 0;
+    p.v[PV_NOTE] = 60;
+    p.v[PV_CH_TYPE] = CH_TRI;
+    p.v[PV_ARP_RATE] = ARP_RATE_1_48;
+    arp_note_on(&a, &p, 5, 0, 0);
+    for (b = 0; b < 200u; b++)
+        arp_block(&a, CTL, ARP_SPS, strum_capture);
+    CHECK(strum_n == 3u && strum_note[0] == 67 && strum_note[2] == 60);
+    CHECK(strum_hold[0] == 0u && strum_key[0] == 5u);   /* a key's strum lasts until the key lets go */
+}
+
+static void test_chord_voices(void)
+{
+    pkt_t p;
+    int8_t seen[4] = {0, 0, 0, 0};
+    uint32_t i, n;
+    memset(voices, 0, sizeof voices);
+    memset(arps, 0, sizeof arps);
+    sound_init(&p, 0);
+    p.v[PV_NOTE] = 60;
+    p.v[PV_LEN] = 4;
+    p.v[PV_CH_TYPE] = CH_7TH;
+    voice_trigger_step(&p, 2, 3200u, 1u);
+    CHECK(voices_active() == 4u);
+    for (i = 0; i < 4u; i++) {
+        seen[i] = voices[i].pkt.v[PV_NOTE];
+        CHECK(voices[i].hold_blocks == 4u * 3200u / CTL);
+    }
+    CHECK(chord_has(seen, 4, 60) && chord_has(seen, 4, 64) && chord_has(seen, 4, 67) && chord_has(seen, 4, 71));
+    CHECK(voices[3].pkt.v[PV_NOTE] == 60);              /* the root starts last, so it is stolen last */
+    memset(voices, 0, sizeof voices);                   /* HOLD: looping the same chord keeps it sounding */
+    p.v[PV_LEN] = (int8_t)LEN_HOLD;
+    voice_trigger_step(&p, 2, 3200u, 1u);
+    n = voices_active();
+    CHECK(n == 4u);
+    voice_trigger_step(&p, 2, 3200u, 1u);
+    CHECK(voices_active() == 4u);
+    for (i = 0; i < 4u; i++)
+        CHECK(voices[i].chain.amp_env.stage < ENV_RELEASE);
+    p.v[PV_CH_DEG] = 1;
+    voice_trigger_step(&p, 2, 3200u, 1u);               /* another chord ends it */
+    for (i = 0; i < 4u; i++)
+        CHECK(voices[i].chain.amp_env.stage >= ENV_RELEASE);
+    memset(voices, 0, sizeof voices);                   /* a held chord changes type: only what differs */
+    p.v[PV_CH_DEG] = 0;
+    p.v[PV_CH_TYPE] = CH_TRI;
+    voice_trigger_chord(&p, 7, 0);
+    p.v[PV_CH_TYPE] = CH_7TH;
+    voice_chord_change(&p, 7);
+    CHECK(voices_active() == 4u);
+    p.v[PV_CH_TYPE] = CH_SUS4;
+    voice_chord_change(&p, 7);
+    n = 0;
+    for (i = 0; i < NVOICE; i++)
+        n += voices[i].active && voices[i].chain.amp_env.stage < ENV_RELEASE;
+    CHECK(n == 3u);                                     /* C, F and G: E and B let go, F new */
+}
+
 /* the path from a step's trigger to the voices */
 static void test_arp_voice_path(void)
 {
@@ -4338,6 +4645,15 @@ int main(void)
     test_stop_and_start();
     test_engine_memory();
     test_voices_silence();
+    test_chord_notes();
+    test_chord_voice_and_bass();
+    test_chord_key_map();
+    test_chord_key_types();
+    test_chord_slash();
+    test_chord_dub_write();
+    test_chord_arp();
+    test_arp_strum();
+    test_chord_voices();
     test_arp_modes();
     test_arp_random_stays_in_the_run();
     test_arp_rate_and_gate();

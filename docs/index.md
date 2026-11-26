@@ -51,13 +51,14 @@ The arp sits after the sequencer and the keys, and before the voices. Its values
 
 | Knob | Name | Values |
 | --- | --- | --- |
-| Knob 1 | MODE | `OFF`, `UP`, `DOWN`, `UPDN`, `PLAY` (in the order the notes came) or `RAND`. `UPDN` sounds the top and bottom notes once a cycle. |
-| Knob 2 | RATE | 1/32, 1/16, 1/8T, 1/8, 1/4T or 1/4. It follows the tempo. |
+| Knob 1 | MODE | `OFF`, `UP`, `DOWN`, `UPDN`, `PLAY` (in the order the notes came), `RAND`, `STRU` or `STRD`. `UPDN` sounds the top and bottom notes once a cycle. |
+| Knob 2 | RATE | 1/96, 1/48, 1/32, 1/16, 1/8T, 1/8, 1/4T or 1/4. It follows the tempo. |
 | Knob 3 | RANGE | 1 to 4 octaves. |
-| Knob 4 | GATE | How much of each hit sounds. At 127 a hit lasts until the next one. |
-| ALGO | LATCH | Keys only. On, the notes stay after the keys are up, and the next press with no key down replaces them. Off ends them. So does `MODE` `OFF`. |
+| Knob 4 | GATE | How much of each hit sounds. At 127 a hit lasts until the next one. `STRU` and `STRD` ignore it. |
+| ALGO | LATCH | Keys only. On, the notes stay after the keys are up, and the next press with no key down replaces them. Off ends them. So does `MODE` `OFF`. In CHORD key mode it also holds a chord with the arp off. |
 
-- **Steps:** a step that fires gives its note to the arp for the note's length. At length 1 and RATE 1/16, that is one hit, so raise LEN to hear the arp run. A `HOLD` note stays until the track's next note, or until the track has no steps on.
+- **Strum:** `STRU` and `STRD` play one pass up or down, at RATE, and each note rings to the end of the chord. The next chord strums again. RATE 1/96 is 21 ms at 120 BPM.
+- **Steps:** a step that fires gives its note or chord to the arp for the note's length. At length 1 and RATE 1/16, that is one hit, so raise LEN to hear the arp run. A `HOLD` note stays until the track's next note, or until the track has no steps on.
 - **Chords:** notes on one track that overlap arpeggiate together, up to 8. A 9th replaces the oldest. A pitch already there is replaced, not doubled.
 - **Locks:** each note keeps its own packet, so each hit has the locks of its step. Only the pitch moves, by RANGE's octaves. The newest note's MODE, RATE, RANGE and GATE run the arp.
 - **Timing:** when a step starts an arp, the first hit is at once, so the step's TIME and SWING count. Later hits follow RATE. A key that starts an arp while the sequencer runs waits for RATE's next boundary. While stopped, it starts at once.
@@ -65,6 +66,49 @@ The arp sits after the sequencer and the keys, and before the voices. Its values
 - **Overdub:** it records the notes that were played, not the hits. Steps play them back through the arp.
 - **Stop:** stop empties every arp.
 - **Screen:** the free space shows 16 steps of the arp's order on C, E and G, with a bar for each hit as wide as its gate.
+
+## Chords
+
+A step stores what a chord means in its key, and not its notes. So a change of key or scale moves every step that follows it. All these values are in the packet: a sound carries them, and a step can lock each one. The CHRD page is on ARP.
+
+| Knob | Name | Range | What it does |
+| --- | --- | --- | --- |
+| SEL | VOICE | -4 to 4 | Above 0, each unit moves the lowest note up an octave. Below 0, it moves the highest note down an octave. |
+| Knob 1 | KEY | C-1 to G9 | The key and its register. This is NOTE, under another name. |
+| Knob 2 | SCALE | `MAJ`, `DOR`, `PHR`, `LYD`, `MIX`, `MIN`, `LOC`, `HARM`, `MELO` | The scale of the key. |
+| Knob 3 | DEG | -36 to 36 | The root, in scale steps from the key. It shows as a numeral and octaves: `VI`, `II+1`. |
+| Knob 4 | TYPE | See below | `OFF` plays one note, which still follows DEG, so a bass line can follow the key. |
+| ALGO | BASS | `OFF`, `I` to `VII` | A degree of the key, placed directly under the chord. |
+
+**Types that follow the scale:** `TRI`, `7TH`, `9TH`, `6TH`, `ADD9`, `SUS2`, `SUS4` and `5TH` stack scale steps from the root.
+
+**Types that ignore the scale:** `MAJ`, `MIN`, `MAJ7`, `MIN7`, `DOM7`, `DIM`, `DIM7` and `AUG` stack semitones from the root.
+
+For example, DEG 0, 5, 3, 4 with `TRI` in C `MAJ` is C, Am, F, G. With SCALE `MIN` it is Cm, Ab, Fm, Gm. A lock on KEY or SCALE changes the key for one step. The free space shows the chord's name and notes.
+
+- **Voices:** a chord starts one voice per note, up to 6, and each counts against the budget. Under load the first notes started are the first stolen, and the root starts near the end.
+- **HOLD and ratchets:** they act on the whole chord. A `HOLD` chord that loops keeps sounding.
+- **Level:** the level of each voice does not change, so a chord is louder than one note.
+
+### CHORD key mode
+
+Tap PLAY to move through `STEPS`, `NOTES` and `CHORD`. In `CHORD`, PLAY flashes and the title bar says `CHORD`.
+
+The white keys are degrees by letter, as if the key were C, so each C is the key. Those keys are half lit. F and the keys up to B below the first C are an octave down, and the keys from the second C are an octave up. OCT moves the keys by an octave. With no modifier, a key plays the sound's TYPE, or `TRI` if that is `OFF`.
+
+Hold a black key to change the chord. From the left:
+
+| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `7TH` | `9TH` | `6TH` | `SUS2` | `SUS4` | `FLIP` | `DOM7` | `DIM` | `AUG` | `/` | shift |
+
+- **More than one:** the rightmost wins, except that `FLIP` with `7TH` gives `MAJ7` or `MIN7`.
+- **FLIP:** it plays `MIN` where the scale has a major third on that degree, and `MAJ` where it does not.
+- **Slash:** hold `/` and press a white key to choose the bass. It does not sound. Each white key pressed after that plays a chord over it, until `/` is up.
+- **One chord at a time:** a new press ends the last chord. Releasing an older key changes nothing.
+- **Change while held:** a modifier changes the chord that sounds. Only the notes that differ stop or start.
+- **Tracks:** hold REC and press OP1 to OP6, as in NOTES. The black key LEDs show the modifiers that are down.
+- **Overdub:** a press writes DEG, and TYPE and BASS, on the nearest step, and only where they differ from the sound. So the step keeps following the sound's key and scale. Its length is the time the key was held.
 
 ## Audio path
 
@@ -130,6 +174,7 @@ First version, about 56 values. KNOB1 to KNOB4 hold each page's main four values
 | Sends | | delay send | reverb send | follower send | stereo | |
 | LFO 1, LFO 2 | | shape | phase mode | rate | start phase | |
 | Mod slots | slot number | source | destination | amount | | |
+| Chord | voice | key | scale | degree | type | bass |
 | Arp | | mode | rate | range | gate | latch |
 | Engine 1 | engine | E1 | E2 | E3 | E4 | patch or model |
 | Engine 2 | | E5 | E6 | E7 | | |
@@ -233,6 +278,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | Step | `HOLD A STEP` until a step is held. |
 | System | Cost in us of one block: each engine alone and shared, each effect, delay, reverb and master, and the budget. Then late buffers, stolen voices and drops. |
 | Master | See Master. |
+| Chord | The chord's name and its notes. |
 | Arp | See Arp. |
 | Save | `NOT BUILT`. It warns that power off loses everything. |
 
@@ -245,7 +291,7 @@ The MASTER knob is the last stage, so it sets the volume and does not change how
 | FX | Filter, Effects, Sends |
 | LFO | LFO 1, LFO 2, Mod slots, Follower |
 | GLO | Global, Master, System |
-| ARP | Arp |
+| ARP | Chord, Arp |
 | SAVE | Save |
 
 The Step page edits held steps. Knobs do nothing there with no step held.
@@ -381,11 +427,14 @@ python3 tools/inop_probe.py 'tap B_LFO' 'knob 1 5' 'shot /tmp/page.png' stat
 - MIDI clock.
 - Per-step parameter lane and range select.
 - Clear and randomize during overdub, including a way to unset locks and free their memory.
-- Shared lock memory: one pool of 1620 locks per pattern that any track can use, in place of 270 per track. It costs no memory. Do this when a track first runs out, or before chords.
-- Chord modes and chord recording. A step keeps one note in its own field, and each added note is a lock on that step.
-- Track transpose, with the chord and key mode, so a transpose can stay in the key.
+- Shared lock memory: one pool of 1620 locks per pattern that any track can use, in place of 270 per track. It costs no memory. Do this when a track first runs out.
+- User chord slots: more TYPE values, each holding notes that are set by hand, for voicings the types do not cover.
+- Chord SPREAD: drop 2 and wide voicings.
+- Revisit CHORD key mode: find out how playable it is, and whether it should stay a mode apart from NOTES. One merge: TYPE OFF plays chromatic notes, and any other TYPE plays degrees and modifiers.
+- Track transpose, so one turn moves a whole track's key, or stays in the scale.
 - Quantization: pitch to a scale, and recorded notes to steps.
 - Mod destinations per engine: the slot list is the same on every engine. On SWARM, `TIMB` moves SHAPE under a name the engine does not use, and `INDX` does nothing. Each engine should list only what it has, under that value's own name.
+- Key tracking as a mod source, so a note's pitch can move any destination.
 - Overdub timing: a choice to keep a recorded note's timing, by writing how far it landed from its step into the step's TIME.
 - Macros: two mod sources set from a panel knob, read every block, so a turn reaches notes that are already ringing.
 - More engines. Take ideas from Digitone, Noise Engineering BIA, MicroFreak, Acid Rain Ripsaw and VHIKK X.
