@@ -1003,14 +1003,9 @@ static int midi_learn_channels(void)
         memset(favorites.factory[ENGI_DIGITAL], 0, 32);
         favorites.factory[ENGI_FM6][FM4_TO_FM6[0] / 8u] &= (uint8_t)~(1u << (FM4_TO_FM6[0] % 8u));
         settings_import(&p, (int)sizeof p);
-#if FELUCCA_LEGACY
-        ok &= !memcmp(favorites.factory[ENGI_DIGITAL] + 1, row + 1, 31) && !favorites.factory[ENGI_DIGITAL][0] &&
-              ((favorites.factory[ENGI_FM6][FM4_TO_FM6[0] / 8u] >> (FM4_TO_FM6[0] % 8u)) & 1u) && ml_count() == ML_N;
-#else                                                   /* ((2.0) DIGITAL's stars as they are: no list shows engine 1) */
         ok &= !memcmp(favorites.factory[ENGI_DIGITAL] + 1, row + 1, 31) && favorites.factory[ENGI_DIGITAL][0] == 1u &&
               !((favorites.factory[ENGI_FM6][FM4_TO_FM6[0] / 8u] >> (FM4_TO_FM6[0] % 8u)) & 1u) && ml_count() == ML_N;
         favorites.factory[ENGI_DIGITAL][0] = 0;
-#endif
         favorites.factory[ENGI_FM6][FM4_TO_FM6[0] / 8u] &= (uint8_t)~(1u << (FM4_TO_FM6[0] % 8u));
     }
     hold(B_HOME);                                       /* LEARN CLEAR */

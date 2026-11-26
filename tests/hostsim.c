@@ -117,23 +117,11 @@ static void host_preset_values(track_t *t, uint32_t e, uint32_t pi, const preset
 static void host_preset_req(track_t *t, uint32_t e, uint32_t pi)
 {
     uint32_t n;
-#if !FELUCCA_FM4 && !FELUCCA_LEGACY
+#if !FELUCCA_FM4
     if (e == ENGI_DIGITAL)                        /* ((2.0) DIGITAL (retired): FM6's preset pi, as ui.c set_engine_of) */
         e = ENGI_FM6;
 #endif
     n = ENGINES[e]->npresets;
-#if !FELUCCA_FM4 && FELUCCA_LEGACY
-    if (e == ENGI_DIGITAL) {                      /* DIGITAL preset pi (retired): converted, as ui.c fm4_load_preset */
-        uint8_t v[FP_SIZE + 1u];
-        uint32_t tr = (uint32_t)(t - trk) % NTRK;
-        fm4_preset_values(t->p, pi);
-        t->preset = (uint8_t)fm4_convert(t->p, v);
-        t->eng_req = ENGI_FM6;
-        fm6_set_patch(tr, v);
-        fm6_slot[tr] = (uint8_t)t->p[P_E7];
-        return;
-    }
-#endif
     if (!n) {
         t->eng_req = (uint8_t)e;
         t->preset = 0;

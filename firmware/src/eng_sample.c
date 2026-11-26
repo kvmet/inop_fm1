@@ -90,6 +90,8 @@ static const char *const SMP_ALL_NAMES[SMP_NALL] = {SMP_SET_NAMES_INIT, "USR1", 
 #define SMP_USER_XIP(k) fm1_xip_ptr(SMP_USER_BASE + (k) * SMP_USER_SIZE)
 #endif
 static const uint8_t *smp_user_xip(uint32_t k) { return SMP_USER_XIP(k); }
+/* zone offsets count from slot 0; a constant array here would let the optimizer fold every read */
+#define SMP_DATA ((const uint8_t *)SMP_USER_XIP(0))
 #if FELUCCA_SLICE
 static void slc_user_scan(uint32_t k, int valid);   /* eng_slice.c: SLICE's slice table of the slot */
 #else
@@ -110,7 +112,7 @@ static void smp_user_scan(uint32_t k)
     slc_user_scan(k, 0);
     if (SMP_USER_HAS(k) && h->magic == SMP_USER_MAGIC && h->version == 1 && h->nz && h->nz <= 16u &&
         h->data_len <= SMP_USER_SIZE - SMP_USER_DATA) {
-        base = (uint32_t)(uintptr_t)(smp_user_xip(k) + SMP_USER_DATA) - (uint32_t)(uintptr_t)SMP_DATA;
+        base = (uint32_t)(smp_user_xip(k) + SMP_USER_DATA - SMP_DATA);
         for (nz = h->nz, i = 0; i < nz; i++) {
             smp_zone_t *z = &zt[i];
             *z = h->zone[i];

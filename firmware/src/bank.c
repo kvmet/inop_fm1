@@ -1441,7 +1441,7 @@ static void mute_switch(uint32_t k)
  * factory[15][17]; (2.0) settings_persist.c clears them from a record of before Skiff's mark at [15][24]) */
 #define SCENES 16u
 #define SCENE_MEM(i) (lists.scene[(i)])
-_Static_assert(5u * SCENES + 2u == PROJ_SCENES && 3u * SCENES + 2u == PROJ_SC2, "the scenes' bytes");
+_Static_assert(5u * SCENES + 2u == PROJ_SCENES, "the scenes' bytes");
 static uint8_t scene_last = 0xFFu;                 /* the scene recalled or stored last (its key lit); 0xFF none */
 static void scene_forget(void) { scene_last = 0xFFu; }   /* (a project load: its own scenes) */
 static uint32_t scene_bits(uint32_t s)
@@ -2009,66 +2009,3 @@ static int bank_restore(uint32_t c, const uint8_t *b, uint32_t len)
     return 0;
 }
 
-#if FELUCCA_LEGACY
-/* ---- (phase 5) the projects of before SKF2 (the four slots, the autosave) become SKF2 ((phase 6) SKF3 with six
- * tracks): each track's steps, timing and automation a pool pattern (one the same there already: that one; an
- * empty track: none), its entry A; their old scenes none (the settings' old scene bytes freed). After a clean boot
- * (main.c: never after a crash, a hang or a failed boot) and after a backup's restore (editor_backup.c). The patterns
- * are written before the project naming them: a power cut on the way leaves the record before, and the next time
- * finds those patterns again. The pool full: that project stays as it is (it loads as before, its steps its own). 1:
- * something written. (2.0) The converter's alone (FELUCCA_LEGACY, web/conv): 2.0 reads none of them ---- */
-#if FELUCCA_FLASH
-static void fm1_wdt_feed(void);                    /* (fm1_sys.h; the host tests' own) */
-#endif
-static int proj_migrate(int allowed)
-{
-    int wrote = 0;
-#if FELUCCA_FLASH
-    project_t *p = &proj_scratch;
-    uint32_t o, k, i, id, used;
-    int16_t tv[5];
-    int len;
-    if (!allowed || !BK_ON)
-        return 0;
-    for (o = 0; o < 5u; o++) {
-        uint32_t obj = o < 4u ? OBJ_PROJECT0 + o : OBJ_AUTOSAVE;
-        fm1_wdt_feed();
-        proj_wire_gen++;
-        len = st_load(obj, &proj_wire, sizeof proj_wire);
-        if (len <= 0 || proj_fmt_of(&proj_wire, len) || !proj_import(p, &proj_wire, len))
-            continue;                              /* (none, SKF2 .. SKF4 already, or no project) */
-        proj_bound(p);
-        proj_drums_to_part(p);                     /* (what a load converts, here first: a pattern's automation */
-        proj_phys(p);                              /* comes as it is stored) */
-        proj_fm4(p);
-        proj_perc(p);
-        for (k = 0; k < NTRK; k++) {
-            for (i = used = 0; i < NSTEP; i++)
-                used |= p->t[k].step[i].n | p->t[k].step[i].hit;
-            for (i = 0; i < p->motion.count; i++)
-                used |= (p->motion.event[i].place >> 6) == k;
-            if (!used || p->t[k].preset == PROJ_DEF_SOUND)
-                continue;                          /* (empty, or its steps cleared when it loads: no pattern) */
-            for (i = 0; i < 5u; i++)
-                tv[i] = p->t[k].p[BK_TIME[i]];
-            if (!bk_pack_raw(bk_rec, k, p->t[k].step, tv, &p->motion, (p->motion.on >> k) & 1u))
-                break;
-            if ((id = pool_find(bk_rec)) == NPAT && ((id = pool_alloc()) == NPAT || pat_keep_now(id, bk_rec)))
-                break;                             /* (the pool full) */
-            p->ent[k][0][0] = (uint8_t)(id + 1u);
-        }
-        while (pend_free() < PEND_N)
-            if (pat_flush_one())
-                return wrote;                      /* (a flash error: the rest another time) */
-        if (k < NTRK || !proj_pack2(&proj_wire, p, PROJ_SKF) || st_save(obj, &proj_wire, PROJ_SKF->size))
-            continue;                              /* (this one as it is) */
-        if (o < 4u)
-            memcpy(&proj_slot[o], &proj_wire, sizeof proj_wire);
-        wrote = 1;
-    }
-#else
-    (void)allowed;
-#endif
-    return wrote;
-}
-#endif

@@ -109,7 +109,10 @@ static struct { const aafont_t *const *f; const uint8_t (*cap)[2]; } uf = {UF_FA
 #define AL_N(n) ((uint32_t)(n) << 8)
 
 #define CV_MAX (240u * 138u)      /* the graph strip is 240 x 124 ((Skiff) BLOCKS: the panel 138, its footer one line) */
-static uint16_t cv_px[CV_MAX] __attribute__((section(".pool")));
+#ifndef CV_SECTION
+#define CV_SECTION __attribute__((section(".pool")))
+#endif
+static uint16_t cv_px[CV_MAX] CV_SECTION;
 static uint32_t cv_w, cv_h;
 static uint16_t cv_bg;           /* what cv_begin cleared the canvas to */
 static uint8_t cv_scroll;        /* 1: drawing a scrolled view (its text may run past the canvas) */

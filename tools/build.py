@@ -127,6 +127,7 @@ def generate():
             [tools / "gen_pixel_font.py", GEN / "ui_pixfont.h"],
             [tools / "gen_sprites.py", GEN / "ui_sprites.h"],
             [tools / "gen_tables.py", GEN / "felucca_tables.h"],
+            [tools / "gen_wave_tables.py", GEN / "felucca_wave_tables.h"],
             [tools / "gen_fm6_patches.py", GEN / "felucca_fm6.h"],
             [tools / "gen_samples.py", GEN / "felucca_samples.h"]]
     procs = [subprocess.Popen([sys.executable, *map(str, c)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -218,9 +219,10 @@ def write_smk_ldr(ota):
 
 def build_app():
     flags = [*CFLAGS, *BOARD_DEFS[BOARD], "-Ifirmware/hal", "-Ifirmware/src", "-Ibuild/gen"]
+    app_src = FW / "inop" / "inop.c" if os.environ.get("INOP") == "1" else FW / "src" / "felucca.c"
     for flag in ("FELUCCA_FLASH", "FELUCCA_OTA", "FELUCCA_OTA_DRYRUN", "FELUCCA_OTA_RAMONLY", "FELUCCA_CDC",
                  "FELUCCA_UART", "FELUCCA_UAC", "FELUCCA_UAC_TONE", "FELUCCA_UAC_48K", "FELUCCA_ICONS", "FELUCCA_SLICE", "FELUCCA_FM4",
-                 "FELUCCA_CDC_DEFAULT", "FELUCCA_CPU2"):
+                 "FELUCCA_CDC_DEFAULT", "FELUCCA_CPU2", "FELUCCA_FLPROBE", "INOP_PROBE"):
         v = os.environ.get(flag)    # unset: the default in firmware/src/felucca.c
         if v in ("0", "1"):
             flags.append(f"-D{flag}={v}")
@@ -234,8 +236,8 @@ def build_app():
     # marked minsize (tools/size_fns.py), then the IR is compiled at -Os. FELUCCA_SIZE=0: -Os everywhere
     size = os.environ.get("FELUCCA_SIZE") != "0"
     cmain = (("cc", *flags, "-S", "-emit-llvm", "-Xclang", "-disable-llvm-optzns", "-c",
-              FW / "src" / "felucca.c", "-o", OUT / "felucca.ll") if size else
-             ("cc", *flags, "-c", FW / "src" / "felucca.c", "-o", OUT / "felucca.o"))
+              app_src, "-o", OUT / "felucca.ll") if size else
+             ("cc", *flags, "-c", app_src, "-o", OUT / "felucca.o"))
     (OUT / "fm1_cpu1.o").unlink(missing_ok=True)
     tc_all(("cc", "-c", FW / "crt0.S", "-o", OUT / "crt0.o"),
            ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
@@ -432,9 +434,6 @@ def main():
         raise SystemExit("build: checks failed")
     pkg = fm1pkg_make.ufw(fm1pkg_make.flash_image(img, fm1pkg_make.KEY), ota, PRODUCT)
     (OUT / name).write_bytes(pkg)
-    att = SRC / "assets" / "samples-cc0" / "ATTRIBUTION.txt"
-    if att.exists():
-        shutil.copy(att, OUT / "ATTRIBUTION.txt")
     print(f"app      {OUT / 'felucca.bin'}  {len(img)} B")
     print(f"loader   {LDR / 'ota.bin'}  {len(ota)} B")
     print(f"package  {OUT / name}  {len(pkg)} B, identity {PRODUCT}" + (f", board {BOARD}" if BOARD != "fm1" else ""))
@@ -451,9 +450,6 @@ def main():
             shutil.copy(f, rel / "LICENSES" / f.name)
         for doc in ("LICENSE", "LICENSING.md"):
             shutil.copy(SRC / doc, rel / doc)
-        if att.exists():
-            shutil.copy(att, rel / "ATTRIBUTION.txt")
-        shutil.copy(SRC / "assets" / "breaks" / "ATTRIBUTION.txt", rel / "ATTRIBUTION-BREAKS.txt")   # (Skiff phase 9)
         print(f"release  {rel}/")
     return 0
 

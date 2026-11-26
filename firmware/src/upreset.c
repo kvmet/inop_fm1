@@ -44,9 +44,7 @@
  * parameters by stored id (core.h SID) in the parameter area and the old pattern's 32 bytes (sid[], UP_SIDS): np is
  * how many, value + 64 each. A newer record's ids past ours are passed over, an older one's missing ones load at their
  * defaults. Versions 1..5 are read as before. Firmware before 2.0 shows a version 6 record as empty and keeps its bytes.
- * (2.0, Tier B 10) Versions 4..6 only, and no DIGITAL record: versions 1..3, the PHYS DRUM / SAMPLE PERC migration and
- * DIGITAL's conversion are built with FELUCCA_LEGACY alone (the converter, web/conv). Such a record keeps its bytes and
- * shows OLD FORMAT (up_old).
+ * Versions 4..6 only, and no DIGITAL record: any other record reads as an empty slot.
  *
  * With -DUP_HOST (host test) only the part above #ifndef UP_HOST is built;
  * it needs nothing but core.h. */
@@ -85,21 +83,14 @@ static up_rec_t *up_rec(uint32_t k) { return &up_bank[k / UP_PER_BANK].r[k % UP_
 
 static int up_valid(const up_rec_t *r)
 {
-    if (!(r->used == UP_USED && r->ver >= (FELUCCA_LEGACY ? 1u : 4u) && r->ver <= UP_VER_SID && r->engine < NENGINES &&
-          (FELUCCA_LEGACY || FELUCCA_FM4 || r->engine != ENGI_DIGITAL) && r->np >= 8u &&
+    if (!(r->used == UP_USED && r->ver >= 4u && r->ver <= UP_VER_SID && r->engine < NENGINES &&
+          (FELUCCA_FM4 || r->engine != ENGI_DIGITAL) && r->np >= 8u &&
           r->np <= (r->ver >= UP_VER_SID ? UP_SIDS : r->ver >= 4u ? UP_PMAX * 2u : UP_PMAX) && r->name[0])) return 0;
     if (r->ver >= 4u) for (uint32_t i = 0; i < r->np; i++) if (r->sid[i] > 191u) return 0;
     return 1;
 }
 
 static int up_used(uint32_t k) { return k < UP_SLOTS && up_valid(up_rec(k)); }
-/* (2.0, D3) slot k holds a sound of a format of before (versions 1..3, a DIGITAL one): kept, OLD FORMAT */
-static int up_old(uint32_t k)
-{
-    const up_rec_t *r = up_rec(k % UP_SLOTS);
-    return !FELUCCA_LEGACY && r->used == UP_USED && r->ver && (r->ver < 4u || (r->ver < UP_VER_SID && r->engine == ENGI_DIGITAL));
-}
-
 static int up_grid(const up_rec_t *r) { return r->ver == 3u || r->ver == UP_VER_GRID; }
 static int up_pat(const up_rec_t *r) { return r->ver < UP_VER_SID; }   /* (it holds a 16-step pattern's fields) */
 /* value k as stored: its place by count (versions 1..5) or (v6) its stored id */
@@ -118,19 +109,6 @@ static void up_set_sound(up_rec_t *r, const int16_t *v)
     for (s = 0; s < SID_COUNT; s++)
         r->sid[s] = (uint8_t)(v[sid_p(s)] + 64);
 }
-#if FELUCCA_LEGACY
-/* Legacy PHYS drums map through decoded parameters, not their disk representation. */
-static void up_migrate(up_rec_t *r)
-{
-    int16_t e[8]; uint32_t k;
-    if (!up_valid(r) || r->ver >= UP_VER_SID) return;   /* ((2.0) 2.0 writes neither) */
-    for (k = 0; k < 8u; k++) e[k] = up_value(r, r->np - 8u + k);
-    if (drum_from_phys(r->engine, e) || drum_from_perc(r->engine, e)) {   /* (SAMPLE PERC: see the top) */
-        r->engine = ENGI_DRUM;
-        for (k = 0; k < 8u; k++) up_set_value(r, r->np - 8u + k, e[k]);
-    }
-}
-#endif
 
 static void up_pat_norm(uint8_t *note, uint8_t *flags);
 /* after loading bank b (len bytes, -1 = none): wrong shape -> empty; each record's pattern inside its fields, as
@@ -146,9 +124,6 @@ static void up_bank_check(uint32_t b, int len)
         up_rec_t *r = &bk->r[i];
         if (!up_valid(r) || !up_pat(r))                 /* ((2.0) v6: no pattern, its bytes values) */
             continue;
-#if FELUCCA_LEGACY
-        up_migrate(r);
-#endif
         for (k = 0; k < 16u; k++)
             if (up_grid(r))
                 r->flags[k] &= r->note[k];          /* a drum grid: accents only on its hits */
@@ -185,11 +160,10 @@ static int up_name_ok(const uint8_t *s, uint32_t n)   /* 1..12 printable ASCII *
     return 1;
 }
 
-/* slot k's name, upper case, 0-terminated (b holds 13); ((2.0) none there "--", a sound of a format of before OLD FORMAT:
- * the question before SAVE writes over it) */
+/* slot k's name, upper case, 0-terminated (b holds 13); none there "--" */
 static void up_name(uint32_t k, char *b)
 {
-    const char *s = up_used(k) ? up_rec(k)->name : up_old(k) ? "OLD FORMAT" : "--";
+    const char *s = up_used(k) ? up_rec(k)->name : "--";
     uint32_t i;
     for (i = 0; i < 12u && s[i]; i++)
         b[i] = s[i] >= 'a' && s[i] <= 'z' ? (char)(s[i] - 32) : s[i];
@@ -220,7 +194,7 @@ static int up_parse(const uint8_t *a, uint32_t na, up_rec_t *r, uint32_t *slot)
         ;
     k = 3u + n;                                  /* after the name's 0 */
     end = k + 2u * P_COUNT + 32u;
-    if (a[0] >= UP_SLOTS || a[1] >= NENGINES || (!FELUCCA_LEGACY && !FELUCCA_FM4 && a[1] == ENGI_DIGITAL) ||
+    if (a[0] >= UP_SLOTS || a[1] >= NENGINES || (!FELUCCA_FM4 && a[1] == ENGI_DIGITAL) ||
         2u + n >= na || !up_name_ok(a + 2, n) || (na != end && (na != end + 17u || a[end] > 1u)))
         return 1;                                /* ((2.0) DIGITAL: none, as up_valid) */
     up_rec_t staged, *target = r;
@@ -253,9 +227,6 @@ static int up_parse(const uint8_t *a, uint32_t na, up_rec_t *r, uint32_t *slot)
         r->flags[i] = a[k + 1];
         up_pat_norm(&r->note[i], &r->flags[i]);
     }
-#if FELUCCA_LEGACY
-    up_migrate(r);                               /* (an editor of before the DRUM engine) */
-#endif
     *target = *r;
     return 0;
 }
@@ -268,10 +239,6 @@ static void up_values(const up_rec_t *r, int16_t *v)   /* mapped and clamped for
     for (i = 0; i < P_COUNT; i++)
         def[i] = param_desc_of(r->engine, i)->def;
     up_params(r, v, def);
-#if FELUCCA_LEGACY
-    if (r->ver == 1u && ENGINES[r->engine] == &ENG_PHYS)   /* (before 1.0: MODEL 2 was DUST) */
-        phys_legacy(&v[P_E0]);
-#endif
     for (i = 0; i < P_COUNT; i++)
         v[i] = (int16_t)param_fit(param_desc_of(r->engine, i), v[i]);   /* (a retired KIT: the kit it plays) */
 }
@@ -460,14 +427,6 @@ static int up_load(uint32_t k)
     up_values(r, v);
     load_begin(t, UNDO_SOUND);                          /* (ui.c: the copy for SAVE held = undo) */
     panic_req |= (uint8_t)(1u << song.sel);
-#if !FELUCCA_FM4 && FELUCCA_LEGACY
-    if (r->engine == ENGI_DIGITAL) {                    /* a DIGITAL sound (kept as it was stored): FM6 */
-        int16_t p[P_COUNT];
-        for (i = 0; i < P_COUNT; i++)
-            p[i] = param_kept(i) ? t->p[i] : v[i];
-        fm4_apply(t, p);
-    } else
-#endif
     {
         fm1_irq_off();                                  /* the audio ISR must not see half a sound */
         t->eng_req = r->engine;
@@ -523,7 +482,7 @@ static void up_ui_named(uint32_t op, uint32_t k, const char *name)   /* 0 load, 
     int rc;
     up_slot_label(l, k);
     if ((op < 2u || op == 3u) && !up_used(k)) {
-        ui_message(up_old(k) ? "OLD FORMAT" : "EMPTY SLOT");   /* ((2.0) converted by the editor's Restore) */
+        ui_message("EMPTY SLOT");
         return;
     }
     if (op && (song.playing || transport_req == 1u)) {    /* (up_put refuses too) */

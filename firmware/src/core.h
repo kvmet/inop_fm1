@@ -51,12 +51,6 @@ _Static_assert(NTRK <= 8 && NPART < NVOICE, "a track mask is a uint8_t; each par
 #define FELUCCA_FM4 0            /* the DIGITAL engine (eng_digital.c, four-operator FM): kept in the tree, not built
                                   * by default; replaced by FM6, its sounds convert (fm4_convert.c) */
 #endif
-#ifndef FELUCCA_LEGACY
-#define FELUCCA_LEGACY 0         /* (2.0, Tier B: design/TIER_B.md 10) the formats of before and their conversions: projects
-                                  * FUN1..FUN9, SKF1, SKF2 (project.c, bank.c proj_migrate), user presets 1..3 and DIGITAL
-                                  * sounds (fm4_convert.c), settings PER1..PER3, 1.0's FM6 bank. Only the converter
-                                  * (web/conv) and its tests build them; 2.0 keeps such a record's bytes (OLD FORMAT) */
-#endif
 #define NENGINES 15u             /* (Skiff) DRUM-X (14) after SLICE (13): the other engines keep their numbers */
 #define ENGI_DIGITAL 1u          /* reserved without FELUCCA_FM4: never selectable (eng_ok), its sounds load as FM6 */
 #define ENGI_SLICE 13u           /* reserved without FELUCCA_SLICE, as DIGITAL is without FELUCCA_FM4 */

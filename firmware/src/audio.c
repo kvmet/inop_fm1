@@ -11,6 +11,9 @@
 #define OUT_SHIFT 7               /* Q15 -> 24-bit, -6 dBFS ceiling (M0f ran clean at -18 dBFS) */
 
 static int32_t abuf[2u * HALF_WORDS] __attribute__((aligned(4)));
+#if FELUCCA_FLPROBE
+static volatile uint32_t flp_hog_ticks;                /* a render lasts at least this long (flprobe.c) */
+#endif
 
 /* diagnostics, kept across resets and UBOOT entry: read with `fm1t memr` */
 #define DBG_MAGIC 0x44424731u                       /* "DBG1" */
@@ -121,6 +124,10 @@ void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) 
 #endif
             audio_block(o + 2u * b, CTL);
         }
+#if FELUCCA_FLPROBE
+        while (fm1_ticks() - t0 < flp_hog_ticks)
+            ;
+#endif
         fm1_audio_ack_half();
         audio_halves++;
         us = shed_check(fm1_ticks() - t0);

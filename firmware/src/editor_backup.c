@@ -4,11 +4,7 @@
  * in main-loop RAM and fully validated before the existing A/B commit path writes.
  * Sample restore uses SMP_BEGIN/WRITE/END and its existing CRC/header-last commit.
  * A disconnected sample restore can lose that sample; the exported file is retained.
- * Id 8 (the FM6 patch bank of 1.0..1.0.2) is listed empty since 1.0.3; a PUT of it from an older archive moves its
- * patches into the user presets restored before it (ids 6, 7), as the first boot after the update does (up_fm6.c);
- * (2.0) only with FELUCCA_LEGACY, the converter's (web/conv): 2.0 takes it empty, and its projects SKF3 and SKF4 (the
- * editor converts the others first); a slot's whole project of before (one the converter couldn't: the archive's
- * patterns full) is kept as it is, OLD FORMAT, and backed up as flash keeps it (proj_old).
+ * Id 8 is listed empty and refuses data. Projects are SKF3 and SKF4 only.
  * Id 9 is the user presets' FM6 patches (up_fm6.c), appended in 1.0.3.
  * (Skiff) Ids 16..31 are the pattern bank's 16 chunks (bank.c, each 4 patterns; 0 bytes: all empty): a restore checks
  * every pattern, then writes the chunk as a save does (its commit record last). Firmware without the bank refuses them
@@ -20,7 +16,7 @@ static const uint8_t ED_BK_IDS[29] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 
 #define ED_BK_N ((uint32_t)sizeof ED_BK_IDS)
 #define ED_BK_MAX ((uint32_t)sizeof proj_wire_u.raw)
 #define ED_BK_RAW (proj_wire_u.raw)  /* reuse the existing serialized main-loop scratch */
-_Static_assert(sizeof proj_wire_u.raw >= sizeof(upf_t) && sizeof proj_wire_u.raw >= sizeof(fm6_bank_t), "backup staging");
+_Static_assert(sizeof proj_wire_u.raw >= sizeof(upf_t), "backup staging");
 static sks_t ed_bk_settings;
 static uint8_t ed_bk_valid, ed_bk_put, ed_bk_id, ed_bk_gen;
 static uint32_t ed_bk_len, ed_bk_crc, ed_bk_pos, ed_bk_ms, ed_bk_usb;
@@ -44,15 +40,9 @@ static const uint8_t *ed_bk_object(uint32_t id, uint32_t *len)
     *len = 0;
     if (id == 0u) { *len = PROJ_SKF->size; return ED_BK_RAW; }    /* (Skiff phase 5: SKF2; phase 6: SKF3; 2.0: SKF4) */
     if (id == 1u) { *len = sizeof ed_bk_settings; return (const uint8_t *)&ed_bk_settings; }
-    if (id >= 2u && id <= 5u) {                     /* ((2.0) the record's own size; one of a format of before as flash
-                                                     * keeps it, for the editor's Restore to convert: proj_old) */
+    if (id >= 2u && id <= 5u) {
         const proj_fmt_t *f = proj_fmt_of(&proj_slot[id - 2u], sizeof proj_slot[0]);
-#if FELUCCA_FLASH
-        st_hdr_t h;
-        if (proj_old(id - 2u) && st_current(OBJ_PROJECT0 + id - 2u, &h) >= 0) { *len = h.len; return st_buf; }
-#endif
-        if (project_used(id - 2u) && !proj_old(id - 2u)) *len = f ? f->size : sizeof proj_slot[0];   /* (the converter's
-                                                                                                * SKF1: the slot) */
+        if (project_used(id - 2u)) *len = f ? f->size : sizeof proj_slot[0];
         return (const uint8_t *)&proj_slot[id - 2u];
     }
     if (id == 6u || id == 7u) {
@@ -115,33 +105,20 @@ static int ed_bk_set_ok(uint32_t palette, uint32_t lowcut, uint32_t zoom, uint32
 static uint32_t ed_bk_commit(void)
 {
     uint8_t *raw = ED_BK_RAW;
-    uint32_t obj, old = 0;
+    uint32_t obj;
     if (ed_bk_pos != ed_bk_len || st_crc32(raw, ed_bk_len) != ed_bk_crc) return 2;
     if (ed_bk_id == 0u || (ed_bk_id >= 2u && ed_bk_id <= 5u)) {
-        if (ed_bk_len && !proj_import(&proj_scratch, raw, (int)ed_bk_len)) {   /* ((2.0) SKF3, SKF4: the editor converts */
-            if (FELUCCA_LEGACY || !ed_bk_id || !(old = proj_old_whole(raw, ed_bk_len)))   /* the others; one it couldn't, */
-                return 2;                           /* whole, kept as it is: OLD FORMAT, converted another time) */
-            ed_bk_len = old;
-        }
-        if (ed_bk_len && !old) {                    /* SKF2 .. SKF4 as they are; an older format becomes SKF1 inside its */
-            const proj_fmt_t *f = proj_fmt_of(raw, (int)ed_bk_len);   /* ranges */
+        if (ed_bk_len && !proj_import(&proj_scratch, raw, (int)ed_bk_len))
+            return 2;
+        if (ed_bk_len) {
+            const proj_fmt_t *f = proj_fmt_of(raw, (int)ed_bk_len);
             proj_bound(&proj_scratch);
-#if FELUCCA_LEGACY
-            if (!(f ? proj_pack2((project_store_t *)raw, &proj_scratch, f)
-                    : proj_pack((project_store_t *)raw, &proj_scratch)))
-                return 2;
-            ed_bk_len = f ? f->size : sizeof(project_store_t);
-#else
             if (!proj_pack2((project_store_t *)raw, &proj_scratch, f))
                 return 2;
             ed_bk_len = f->size;
-#endif
         }
         if (ed_bk_id == 0u) {                       /* (the last object of a restore: fm1backup.js) */
             if (!ed_bk_len || project_restore_runtime(&proj_scratch)) return 2;
-#if FELUCCA_LEGACY
-            (void)proj_migrate(1);                  /* (phase 5) an older archive's projects (ids 2..5): SKF2 (SKF3) */
-#endif
             return 0;
         }
         obj = OBJ_PROJECT0 + ed_bk_id - 2u;
@@ -167,16 +144,8 @@ static uint32_t ed_bk_commit(void)
             p->rsize != sizeof(up_rec_t) || p->nslot != UP_PER_BANK)) return 2;
         /* Unknown record versions remain inert bytes, preserving future/older bank data. */
         obj = OBJ_UPRESET0 + ed_bk_id - 6u;
-    } else if (ed_bk_id == 8u) {                    /* an older archive's FM6 bank: into the restored user presets */
-        if (!ed_bk_len) return 0;
-#if FELUCCA_LEGACY
-        if (ed_bk_len != sizeof(fm6_bank_t) || !fm6_bank_valid((const fm6_bank_t *)raw)) return 2;
-        upf_migrate((const fm6_bank_t *)raw);
-        sync_reload = 1; ui.force = 1;
-        return upf_save() == 2 ? 4u : 0u;
-#else
-        return 2;                                   /* ((2.0) the converter moves them: web/conv) */
-#endif
+    } else if (ed_bk_id == 8u) {                    /* (ed_bk_write refuses a non-empty one) */
+        return ed_bk_len ? 2u : 0u;
     } else if (ed_bk_id == 9u) {                    /* the user presets' FM6 patches (0: none) */
         const upf_t *u = (const upf_t *)raw;
         if (ed_bk_len && (ed_bk_len != sizeof *u || !upf_valid(u) || (u->used >> (UP_SLOTS - 1u) >> 1))) return 2;
@@ -197,9 +166,7 @@ static uint32_t ed_bk_commit(void)
         memset(&proj_slot[ed_bk_id - 2u], 0, sizeof proj_slot[0]);
         if (proj_cur == ed_bk_id - 2u)
             proj_cur = PROJ_NO_SLOT;                     /* (another project there now: the music keeps its name) */
-        if (old)
-            proj_slot[ed_bk_id - 2u].align = *(const uint32_t *)raw;   /* ((2.0, D3) its magic: OLD FORMAT, as proj_fetch) */
-        else if (ed_bk_len)
+        if (ed_bk_len)
             memcpy(&proj_slot[ed_bk_id - 2u], raw, ed_bk_len);
     } else if (ed_bk_id == 1u) {
         memcpy(&ed_bk_settings, raw, sizeof ed_bk_settings);
@@ -217,13 +184,7 @@ static uint32_t ed_bk_commit(void)
     sync_reload = 1; ui.force = 1;
     return 0;
 }
-/* a project object's length: (Skiff) SKF4 (2.0), SKF3 (phase 6), SKF2 (phase 5), SKF1 (and 1.x's slots: SKF3 in 3840),
- * FUN9, FUN8 (before the DRUM lane levels, 1.0.x), FUN7. ((2.0) the old ones are taken, then refused at the commit) */
-static int proj_store_len(uint32_t len)
-{
-    return len == PROJ_STORE_SIZE || len == PROJ_STORE4 || len == PROJ_STORE3 || len == PROJ_STORE2 ||
-           len == PROJ_STORE_V9 || len == PROJ_STORE_V8 || len == PROJ_STORE_V7;
-}
+static int proj_store_len(uint32_t len) { return len == PROJ_STORE4 || len == PROJ_STORE3; }
 static uint32_t ed_bk_write(const uint8_t *a, uint32_t n)
 {
     /* the arguments first: a malformed request never stops the transport */
@@ -235,7 +196,7 @@ static uint32_t ed_bk_write(const uint8_t *a, uint32_t n)
             (a[1] == 1u && len != sizeof(persist_t) && len != sizeof(sks_t)) ||
             (a[1] >= 2u && a[1] <= 5u && len && !proj_store_len(len)) ||
             ((a[1] == 6u || a[1] == 7u) && len && len != sizeof(up_bank_t)) ||
-            (a[1] == 8u && len && (!FELUCCA_LEGACY || len != sizeof(fm6_bank_t))) ||   /* ((2.0) only empty: web/conv) */
+            (a[1] == 8u && len) ||
             (a[1] == 9u && len && len != sizeof(upf_t)) ||
             (ED_BK_BANK(a[1]) && len && len != BK_LEN)) return 1;
         if (ed_flash_stop()) return 3;

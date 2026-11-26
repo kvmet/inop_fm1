@@ -55,22 +55,7 @@ _Static_assert(sizeof(sks_skiff_t) == 32u && ENGI_DIGITAL == 1u, "SKS1: favorite
 static int settings_import_per(persist_t *p, int n)
 {
     int current = n == (int)sizeof *p && p->magic == PERSIST_MAGIC;
-#if FELUCCA_LEGACY                                 /* ((2.0) PER1..PER3, Felucca's before 1.0: the converter's) */
-    int old3 = n == (int)(sizeof *p - sizeof p->favorites) && p->magic == 0x50455233u;
-    int old2 = n == (int)(sizeof *p - sizeof p->favorites - sizeof p->bold) && p->magic == 0x50455232u;
-    int old1 = n == (int)(8u + sizeof(panel_t)) && p->magic == 0x50455231u;
-    if (!(current || old3 || old2 || old1)) return 0;
-    if (old1) {
-        panel_t old;
-        memcpy(&old, (uint8_t *)p + 8, sizeof old);
-        p->panel = old;
-        p->lowcut = p->zoom = 0;
-    }
-    if (old1 || old2) p->bold = 0;
-    if (!current) memset(&p->favorites, 0, sizeof p->favorites);
-#else
     if (!current) return 0;
-#endif
     {   /* CLICK, CLICK LEVEL, COUNT-IN (ui.c ui_rec_prefs): two bits each, 3 is no value: the default (0) */
         uint32_t b = p->favorites.factory[15][28], f;
         for (f = 0; f < 3u; f++)
@@ -110,21 +95,6 @@ static int settings_import_per(persist_t *p, int n)
 #ifdef FELUCCA_FAVORITES
     memcpy(&favorites, &p->favorites, sizeof favorites);
     favorites.filter = favorites.filter == 1u;
-#if defined(FM4_NPRESETS) && !FELUCCA_FM4 && FELUCCA_LEGACY
-    {   /* DIGITAL's starred presets (engine 1, retired) -> the FM6 presets that cover them (fm4_convert.c) */
-        uint32_t k;
-        for (k = 0; k < FM4_NPRESETS; k++)
-            if ((favorites.factory[ENGI_DIGITAL][0] >> k) & 1u)
-                favorites.factory[ENGI_FM6][FM4_TO_FM6[k] / 8u] |= (uint8_t)(1u << (FM4_TO_FM6[k] % 8u));
-        favorites.factory[ENGI_DIGITAL][0] = 0;  /* ((1.3) bytes 2..31: MIDI LEARN's map, midi_control.c ML_N) */
-    }
-#endif
-#if defined(SMP_SET_PERC) && FELUCCA_LEGACY
-    if ((favorites.factory[ENGI_SAMPLE][0] >> SMP_SET_PERC) & 1u) {   /* SAMPLE's PERC (preset 4, retired): DRUM's */
-        favorites.factory[ENGI_DRUM][0] |= 1u;                         /* kit (core.h drum_from_perc) */
-        favorites.factory[ENGI_SAMPLE][0] &= (uint8_t)~(1u << SMP_SET_PERC);
-    }
-#endif
 #endif
     if (p->panel.magic == PANEL_MAGIC) panel = p->panel;
     return current ? 1 : 2;
@@ -143,7 +113,7 @@ static void sks_pack(sks_t *s, const uint8_t (*ff)[32], uint32_t user, uint32_t 
     memcpy(s->cpal_cols, &ff[14][8], sizeof s->cpal_cols);
     memcpy(s->ml, &ff[ENGI_DIGITAL][2], sizeof s->ml);
 }
-/* b, n bytes of a stored settings record: SKS1, or (before 2.0) PER4 (.. PER1 with FELUCCA_LEGACY). Normalized in place;
+/* b, n bytes of a stored settings record: SKS1, or (before 2.0) PER4. Normalized in place;
  * 1 = current, 2 = migrated, 0 = invalid. An SKS1 is read as the PER4 it names (Skiff's: its mark), its room kept */
 static int settings_import(void *b, int n)
 {

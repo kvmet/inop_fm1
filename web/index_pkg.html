@@ -82,12 +82,6 @@ const TEXT = {
     stockUnsupported: "このファームウェアは Skiff の全体バックアップを作れません。古い Skiff なら先に最新版をインストールしてください。他のファームウェアから戻すには M-VAVE のアップデーターを使ってください。",
     stockIsStock: "この機器はすでにその公式ファームウェアです。",
     stockNotSkiff: "この機器は Skiff ではないため、バックアップする Skiff の曲はありません。他のファームウェアから戻すには M-VAVE のアップデーターを使ってください。機器の報告: ",
-    saved20: "Skiff 2.0 は、それより前のファームウェアで保存したデータをそのままでは開けません。先にこの機器の全体バックアップをこのパソコンに保存しました（Skiff-backup-....json）。これが元に戻す方法です: 今のファームウェアを入れ直し、エディタで復元します。Skiff 2.0 をインストールしますか？",
-    converting: "前のファームウェアで保存したデータを 2.0 用に変換中 ",
-    converted: "完了。前のファームウェアで保存したデータを 2.0 用に変換しました（下に一覧）。",
-    asIs: "完了。この機器のデータはそのまま 2.0 で開けます。",
-    convertedPart: "完了しましたが、前のファームウェアで保存したデータの一部はそのままです（下に一覧）。本体では OLD FORMAT と表示されます。空きパターンが足りなかったプロジェクトは、SAVE > PATTERNS で空けてからエディタでバックアップし、それを復元すると変換されます。",
-    convertFailed: "インストールは完了しましたが、前のデータの変換に失敗しました。保存したバックアップをエディタで復元してください（復元時に変換されます）。",
     stockWrongModel: "選んだファイルは、接続している機器とは別の機種用です。",
     stockSkiffOld: "書き込みはしていません。この Skiff はその公式版にまだ対応していません。最新の Skiff をインストールしてから、公式ファームウェアに戻してください。",
     stockNeedsV16: "書き込みはしていません。この FM-1 の起動部は V16 のものです（Skiff の前は V16 でした）。戻せるのは V16 です。M-VAVE の現在の FM-1.fwsc（V16）を選んでください。",
@@ -132,12 +126,6 @@ const TEXT = {
     stockUnsupported: "This firmware cannot make a complete Skiff backup. An older Skiff: install the current Skiff first. Another firmware: return with M-VAVE's updater.",
     stockIsStock: "This keyboard already runs that official firmware.",
     stockNotSkiff: "This keyboard is not running Skiff, so there is no Skiff music to back up. To return from another firmware, use M-VAVE's updater. It reports: ",
-    saved20: "Skiff 2.0 opens nothing that firmware before it saves: a complete backup of this unit was saved to this computer first (Skiff-backup-....json). It is the way back: install your firmware of now, then restore it in the editor. Install Skiff 2.0?",
-    converting: "Converting what the firmware before saved, for 2.0 ",
-    converted: "Done. What the firmware before saved was converted for 2.0 (the list below).",
-    asIs: "Done. Everything this unit had opens in 2.0 as it is.",
-    convertedPart: "Done, but some of what the firmware before saved stays as it was (the list below): the unit shows it as OLD FORMAT. A project no free pattern could take converts once you free some (SAVE > PATTERNS), take a backup in the editor and restore it.",
-    convertFailed: "Installed, but converting what the firmware before saved failed: restore the saved backup in the editor, which converts it. ",
     stockWrongModel: "The selected file is for another model than the connected keyboard.",
     stockSkiffOld: "Nothing was written. This Skiff can't take that official version yet: install the current Skiff first, then return to the official firmware.",
     stockNeedsV16: "Nothing was written. This FM-1's start-up part is V16's (it ran V16 before Skiff), so its way back is V16: select M-VAVE's current FM-1.fwsc (V16).",
@@ -231,11 +219,7 @@ $("go").addEventListener("click", async () => {
     const image = await imageFor(entry);
     const step = stepper();
     if (IS_OTA(dev.id)) { sayK((await up.resume(image, step, entry.product)) ? "done" : "stopped"); return; }
-    const model = entry.product.split("_")[0];
-    const archive = await backupBefore(up, model);   // ((2.0) over firmware before it: the backup first, the way back)
-    if (archive && !confirm(t("saved20"))) return;
     await up.install(image, entry.product, step);
-    if (archive) await convertAfter(up, model, archive);
   } catch (e) {
     if (e && e.code && TEXT[lang][e.code]) sayK(e.code, e.detail || (e.code === "loadfail" ? e.message : ""));
     else sayK("error", e && e.message);
@@ -257,47 +241,6 @@ function saveArchive(archive) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(archive)], {type:"application/json"}));
   const a = document.createElement("a"); a.href = url; a.download = `Skiff-backup-${new Date().toISOString().slice(0,10)}.json`;
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-// ((Skiff 2.0, Tier B: design/TIER_B.md 10) installing 2.0 over firmware before it that answers complete backups (Skiff,
-// Felucca 1.0.3 on): its backup taken and saved to this computer first (the way back; a failure stops before anything is
-// written); after the install, what 2.0 can't read converted (web/conv/conv.js) and only that written back. Other
-// firmware (stock, JIANT: nothing of Skiff's to convert) installs as before
-const major = (v) => +(/(\d+)\.\d/.exec(v || "") || [0, 0])[1];
-async function backupBefore(up, model) {
-  if (major(meta.version) < 2) return null;
-  const device = await up.find((id) => !IS_OTA(id) && sameModel(id.model, model));
-  if (!device) return null;
-  const input = device.link.input, output = device.link.output; device.link.close();
-  const link = new BackupConnection(input, output);
-  try {
-    let reply;
-    try { reply = await link.request([1, []]); }
-    catch (e) { if (e.code === "timeout") return null; throw e; }
-    const info = archiveInfo(reply);
-    if (!info.supported || major(info.version) >= 2) return null;
-    const archive = await captureBackup((r, o) => link.request(r, o), info.version,
-      (done, total) => sayK("backup", `${Math.round(done / Math.max(1, total) * 100)}%`));
-    saveArchive(archive);
-    return archive;
-  } finally { link.close(); }
-}
-async function convertAfter(up, model, archive) {
-  let link = null;
-  sayK("converting");
-  try {
-    const device = await up.waitFor((id) => !IS_OTA(id) && sameModel(id.model, model), 20000);
-    if (!device) throw new Error("the unit does not answer");
-    const input = device.link.input, output = device.link.output; device.link.close();
-    link = new BackupConnection(input, output);
-    const r = (await loadConverter("../editor/conv/conv.wasm")).convert(readBackup(archive));
-    if (r.writeBack.length)
-      await restoreBackup((q, o) => link.request(q, o), r.archive,
-        (done, total) => sayK("converting", `${Math.round(done / Math.max(1, total) * 100)}%`), r.writeBack);
-    for (const x of r.report)
-      if (x.what !== "kept" || x.note) log(`${x.id}: ${x.was} -> ${x.now} (${x.what})${x.note ? `: ${x.note}` : ""}`);
-    sayK(r.report.some((x) => /^(refused|kept as)/.test(x.what)) ? "convertedPart" : r.writeBack.length ? "converted" : "asIs");
-  } catch (e) { sayK("convertFailed", e.message); log(String(e.stack || e)); }
-  finally { if (link) link.close(); }
 }
 function archiveInfo(a) {
   let pos = a.indexOf(0); if (pos < 0) throw new Error("Invalid INFO");

@@ -1772,8 +1772,7 @@ static void graph_user(void)
         if (used)
             up_name(k, nm);
         else
-            str_cpy(nm, "--", sizeof nm);            /* ((2.0) an OLD FORMAT one too: up_name's label in here grew
-                                                      * draw_graph by about 300 B; LOAD and SAVE's question name it) */
+            str_cpy(nm, "--", sizeof nm);
         list_row(LIST_Y(row), k == ui.uslot, tag, T_MID, nm, used ? T_TEXT : T_DIM, 232);
     }
 }

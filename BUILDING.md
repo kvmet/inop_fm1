@@ -46,8 +46,7 @@ On Linux x86-64 the toolchain runs natively and Docker is not needed.
 `./build.sh --release 1.2` makes a release build: the package identity becomes `FM-1_712`
 (Skiff's 7XY; Felucca's are 9XY) and the version string `v1.2`; the package is `build/skiff-1.2.fwsc`, and
 `build/release-1.2/` holds what a release ships: the package, the app
-(`skiff-1.2-app.bin`), `SHA256SUMS`, the samples' attributions (`ATTRIBUTION.txt` for the CC0 sets,
-`ATTRIBUTION-BREAKS.txt` for SLICE's BREAK and FUNK), `LICENSE`, `LICENSING.md` and
+(`skiff-1.2-app.bin`), `SHA256SUMS`, `LICENSE`, `LICENSING.md` and
 `LICENSES/` (the package contains Apache-2.0 SDK files, so the licence texts travel with it).
 `web/make_site.py build/skiff-1.2.fwsc 1.2 OUT` makes the GitHub Pages site from it: the browser installer, the
 editor and the package with its licences.
@@ -79,11 +78,8 @@ Build options (environment, `0` or `1`; defaults in `firmware/src/felucca.c`, `c
 
 ## Samples
 
-The CC0 instrument samples that the SAMPLE engine uses are in `assets/samples-cc0/`
-(Versilian Studios, see `ATTRIBUTION.txt` there). `tools/fetch_cc0.py` downloads them
-again from the source repositories. Without that folder the build still works, with no
-instrument sets in the SAMPLE engine and no PIANO in SLICE (the PIANO set's middle C): they play a plain sine
-at the note's pitch instead, and the screen says NO SAMPLE.
+The firmware has no factory samples. SAMPLE, GRAIN and SLICE play the user sample slots, and play a plain sine at the
+note's pitch with NO SAMPLE on the screen while a slot is empty.
 
 ## Browser emulator
 

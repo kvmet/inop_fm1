@@ -10,6 +10,7 @@
  *   - 2000 bouncy presses of every note key and button: exactly one note-on (press edge) and one
  *     release each, no note ending while the key is held, none hanging 12 ms after the last bounce;
  *   - a stray closed sample (a 150 us glitch) plays nothing;
+ *   - a row pulled low outside the scan plays none of its keys, a chord on one row still plays (fm1__keys_frame);
  *   - fast repeats (40 ms apart) are all heard;
  *   - the encoders still count one step per detent (their decoder is not touched);
  *   - the LED scan through fm1_input_tick: lit LEDs all of their tick, dim ones a pulse over the start of the
@@ -451,6 +452,25 @@ static void anim_test(void)
     memset(fm1_led_breath, 0, sizeof fm1_led_breath);
 }
 
+static void guard_reset(void)
+{
+    reset();
+    memset(fm1__row_hold, 0, sizeof fm1__row_hold);
+    memset(fm1__row_crowd, 0, sizeof fm1__row_crowd);
+}
+/* one frame of row PA7, a character per column, I at the end: closed with no column driven. The note keys pressed by it */
+static uint32_t guard_frame(const char *row)
+{
+    enum { ROW_PA7 = 3 };
+    uint32_t p, pressed;
+    for (p = 0; p < FM1_NCOL; p++)
+        fm1_in.raw[p] = (uint8_t)(row[p] == '#' ? 1u << ROW_PA7 : 0u);
+    fm1__keys_frame(row[FM1_NCOL] == 'I' ? 1u << ROW_PA7 : 0u);
+    pressed = fm1_in.notes_pressed;
+    fm1_in.notes_pressed = 0;
+    return pressed;
+}
+
 int main(void)
 {
     uint32_t id, k, lat_max = 0, lat_sum = 0, lat_n = 0, worst_rel = 0, bad = 0;
@@ -557,6 +577,96 @@ int main(void)
             any += rises + edges;
         }
         check("a 150 us glitch plays no note", any == 0u);
+    }
+
+    /* OP5 pulls its whole row low with no column driven, in bursts around the press, in the tick's order: the idle
+     * read comes before the last column's keys. Each burst is longer than a frame, so an idle read always sees it */
+    {
+        enum { GUARD_ROW = 3, OTHER_ROW = 4, OP5_COL = 1, HELD_COL = 10, OTHER_COL = 8, OP5_ID = 24, HELD_ID = 33, OTHER_ID = 20 };
+        const uint32_t row_bit = 1u << GUARD_ROW, expected = 1u << (OP5_ID - 14) | 1u << (HELD_ID - 14) | 1u << (OTHER_ID - 14);
+        uint32_t trial, strays = 0, op5_missed = 0, op5_slow = 0, held_lost = 0, other_slow = 0;
+        for (trial = 0; trial < 2000u; trial++) {
+            uint32_t us, burst, start = 10000u + rnd(FM1_NCOL * TICK_US), pressed = 0, op5_at = 0, other_at = 0, last_end;
+            uint32_t from[3], to[3];
+            reset();
+            guard_reset();
+            last_end = start;
+            for (burst = 0; burst < 3u; burst++) {
+                from[burst] = last_end + (burst ? 200u + rnd(3000u) : 0u);
+                to[burst] = from[burst] + 1200u + rnd(5000u);
+                last_end = to[burst];
+            }
+            for (us = 0; us < last_end + 30000u;) {
+                uint32_t p;
+                for (p = 0; p < FM1_NCOL; p++, us += TICK_US) {
+                    uint32_t low = 0, raw = 0;
+                    for (burst = 0; burst < 3u; burst++)
+                        low |= us >= from[burst] && us < to[burst];
+                    if (low)
+                        raw |= row_bit;
+                    if (p == OP5_COL && us >= start)
+                        raw |= row_bit;
+                    if (p == HELD_COL)
+                        raw |= row_bit;
+                    if (p == OTHER_COL && us >= start)
+                        raw |= 1u << OTHER_ROW;
+                    fm1_in.raw[p] = (uint8_t)raw;
+                    host_now = us * 24u;
+                    if (p == FM1_NCOL - 1u)
+                        fm1__keys_frame(low ? row_bit : 0u);
+                    pressed |= fm1_in.notes_pressed;
+                    fm1_in.notes_pressed = 0;
+                    if (!op5_at && (pressed >> (OP5_ID - 14) & 1u))
+                        op5_at = us;
+                    if (!other_at && (pressed >> (OTHER_ID - 14) & 1u))
+                        other_at = us;
+                    if (us > 5000u && !(fm1_in.notes >> (HELD_ID - 14) & 1u))
+                        held_lost++;
+                }
+            }
+            strays += (pressed & ~expected) != 0u;
+            op5_missed += !op5_at;
+            op5_slow += op5_at > last_end + (FM1_ROW_HOLD + 3u) * FM1_NCOL * TICK_US;
+            other_slow += other_at > start + 3u * FM1_NCOL * TICK_US;
+        }
+        check("a row pulled low plays no other key on it", strays == 0u);
+        check("the key under the fault still presses, soon after the fault ends", !op5_missed && !op5_slow);
+        check("a key held on that row stays down", held_lost == 0u);
+        check("a press on another row does not wait", other_slow == 0u);
+    }
+
+    /* row PA7 frame by frame, as logged on the device while pressing OP5 (# column closed, I closed with no column driven) */
+    {
+        static const char *const ramp[] = {".#.........", ".#....####.", ".#########.", ".##.#######I", "###########I", "###########I", "###########I"};
+        static const char *const sudden[] = {".#.........", ".##........", "###########I", "###########I", "###########I"};
+        const uint32_t op5 = 1u << 10;
+        uint32_t f, pressed = 0;
+        guard_reset();
+        for (f = 0; f < sizeof ramp / sizeof *ramp; f++)
+            pressed |= guard_frame(ramp[f]);
+        for (f = 0; f < 20u; f++)
+            pressed |= guard_frame(".#.........");
+        check("logged fault, part of a frame at first: only OP5 plays", pressed == op5);
+        guard_reset();
+        pressed = 0;
+        for (f = 0; f < sizeof sudden / sizeof *sudden; f++)
+            pressed |= guard_frame(sudden[f]);
+        for (f = 0; f < 20u; f++)
+            pressed |= guard_frame(".#.........");
+        check("logged fault, one neighbor closing first: only OP5 plays", pressed == op5);
+
+        guard_reset();
+        guard_frame("...#.#.....");
+        check("two keys closing together play at the usual debounce", guard_frame("...#.#.....") == (1u << 12 | 1u << 14));
+        guard_reset();
+        pressed = 0;
+        for (f = 0; f + 1u < FM1_ROW_CROWD_FRAMES; f++)
+            pressed |= guard_frame("...#.#.#...");
+        check("three keys closing together wait", pressed == 0u);
+        pressed |= guard_frame("...#.#.#...");
+        pressed |= guard_frame("...#.#.#...");
+        check("then all three play", pressed == (1u << 12 | 1u << 14 | 1u << 16));
+        guard_reset();
     }
 
     /* fast repeats */

@@ -18,6 +18,9 @@
 #ifndef FELUCCA_OTA_DRYRUN
 #define FELUCCA_OTA_DRYRUN 0     /* 1 = stage, ask "success", then undo: no record, no reset */
 #endif
+#ifndef FELUCCA_FLPROBE
+#define FELUCCA_FLPROBE 0        /* the console's flash timing commands (flprobe.c) */
+#endif
 #ifndef FELUCCA_CDC
 #define FELUCCA_CDC 1            /* USB CDC-ACM serial console */
 #endif

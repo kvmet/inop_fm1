@@ -88,18 +88,8 @@ Python). Two steps come first: M-VAVE's firmware V016 on the keyboard, and a bac
 keyboard's own key calibration. [SMK37.md](SMK37.md#install) has both, the way back and what to do if it does not
 start.
 
-**Updating to 2.0** from Skiff 1.x or Felucca: 2.0 reads what Skiff 1.0 and later saved, and keeps it in newer
-formats from then on. The installer page first takes a complete backup and saves it to your computer
-(`Skiff-backup-DATE.json`: keep it, it is the way back). After the install it converts what 2.0 can't read as it
-was (Felucca's projects and user sounds, DIGITAL sounds, the oldest formats) and writes only that back, with a list
-of what it converted and of anything with no place in 2.0.
-- `fm1_install.py` converts nothing. 2.0 shows a slot it can't read as OLD FORMAT and keeps it. In the Skiff Editor,
-  take a backup and restore it: the Restore converts it.
-- A project the converter couldn't give patterns to (the pattern pool full) also stays OLD FORMAT: free some in
-  SAVE › PATTERNS, then take a backup and restore it.
-- **The way back to 1.x:** install 1.4.x, then restore the dated backup in the Skiff Editor. 1.x doesn't read what
-  2.0 saves: such projects and user sounds look empty there (their bytes stay until saved over), and its settings
-  start at their defaults.
+**Older data:** this firmware reads projects saved as SKF3 or SKF4 and user presets of version 4 to 6. Any other record
+reads as an empty slot and SAVE writes over it. There is no converter.
 
 **Edit from a computer:** the [Skiff Editor](https://illuminus5.github.io/skiff/webapp/editor/) (Chrome or
 Edge, over USB MIDI).
@@ -117,7 +107,7 @@ Edge, over USB MIDI).
 | **Performance** | PERFORM: launch any track's entries and stage mutes on LOOP, BAR, BEAT or NOW; 16 scenes; throws (CUTOFF, REVERB, DELAY, DIST) that glide back, or stay; one mute a track on the black keys of GLO, FX and PERFORM (a tap latches it, held it cuts); the FX layer: repeat, reverse, filter sweeps, tape stop, freeze, harmonizer, gate, dub echo, flanger, vinyl |
 | **Sound** | per track: an envelope (in milliseconds or note values) and a second one for modulation (ENV 2), an LFO (free or synced to the tempo), one MOD page for where they go (the LFO's four depths, the envelope's three, a 4-slot modulation matrix), DIST in five types (INSERT's SOFT, HARD, FOLD, CRUSH, FUZZ) with a TONE, an INSERT (drives, a bitcrusher, phaser, flanger, chorus) with MIX, the SLICER (16 patterns), DUCK (sidechain), SPREAD (the voices across the stereo field); a drum kit's lanes tuned, their decay set and (2.0) panned one by one; arpeggiator (14 modes), chord keys (9 chords, 5 voicings), 16 scales; MONO, LEGATO, UNISON, glide |
 | **Effects** | chorus (CHORUS, FLANGER or PHASER, with FEEDBACK), delay and reverb (ROOM, SPRING or a stereo HALL) as sends |
-| **Memory** | 4 projects, 32 user sounds, 3 user sample slots; the music comes back at power-on (RESTORE LAST); 8 levels of undo |
+| **Memory** | 4 projects, 32 user sounds, 3 user sample slots; the music comes back at power-on (RESTORE LAST); 4 levels of undo |
 | **Screen** | 240 × 240 colour; a graph on every page; HOME held shows every control's job; 6 themes and colours of your own; LARGE mode with tall cards |
 | **MIDI and USB** | USB MIDI in and out, TRS MIDI in; clock from inside, USB or TRS; each track its own channel (1–6 by default); MIDI LEARN for any knob; Program Change; a stereo USB audio input to record the master on a computer |
 | **Editor** | in the browser: sounds, steps, the mixer, the song lists, scenes and pattern pool, projects, the DRUM-X kit, the settings, PLAY, STOP and REC |
@@ -340,7 +330,7 @@ Felucca) first, and lists what it converted.
   entry and mute), SAVE held + a key stores one; throws on KNOB 1–4 (CUTOFF, REVERB, DELAY, DIST) that glide back over
   a bar (MENU › CONTROL › RETURN), or stay where they are with OCT+ (2.0)
 - **TAKE** (SHIFT + SAVE): keep the last loop you played, notes and knob moves, on the track, after the fact
-- **Undo:** SAVE held, 8 levels across the tracks (sound loads, takes, clears, tools, recording passes,
+- **Undo:** SAVE held, 4 levels across the tracks (sound loads, takes, clears, tools, recording passes,
   automation edits); OCT− and OCT+ step through them while the undo box shows
 - **Parameter locks and automation:** hold a step and turn a knob to lock it; knob moves recorded live; SEQ ›
   AUTOMATION lists them all to edit, move or delete
@@ -516,7 +506,7 @@ In the order the device lists them:
 - **GRAIN**: granular textures from the built-in samples or a user slot
 - **PHYS**: physical models: modal resonators, strings, struck membranes, sympathetic strings
 - **NOISE**: noise from analog to digital: colours, crackle, shift-register and metallic tones
-- **SLICE**: two drum breaks, a piano note (all built in) or your own sample cut into slices, one per key;
+- **SLICE**: your own sample cut into slices, one per key;
   set the slices by hand on the SLICES page
 - **DRUM**: an 8-lane kit of Felucca's own drum voices on the General MIDI key map. KIT picks the
   standard kit or one of five virtual-analog (VA) kits in the manner of
@@ -547,8 +537,7 @@ In the order the device lists them:
 The DIGITAL engine of Felucca 0.9 became FM6: projects and presets with DIGITAL sounds load as FM6 sounds converted
 from them. The SAMPLE engine's PERC kit was removed in Felucca 1.0.2: sounds and projects that used it load as the
 DRUM engine's kit, on the same key map. FM6's patch bank (the B slots) was removed in 1.0.3: user presets keep their
-own FM6 patch. SLICE gained a second built-in sound in 1.0.4, PIANO, next to BREAK; this version a new BREAK (one bar
-at 120 BPM) and FUNK (SOURCE 5: two beats at 86 BPM), both made with the YuE2 music model. A missing sample (an empty user
+own FM6 patch. A missing sample (an empty user
 slot) plays a plain sine at the note's pitch on SAMPLE, GRAIN and SLICE, and the screen says NO SAMPLE once. DRUM's
 KIT variants HAND, CYM and H+CYM were retired in 1.0.5: sounds and projects that used them play the 66, 10 and 77
 kits. Felucca's projects become Skiff's at the first start: each track's steps a pattern on its entry A.
@@ -739,8 +728,6 @@ Skiff stands on Felucca. If it is useful to you, support Felucca's author:
 - Fonts: [Barlow Condensed](https://github.com/jpt/barlow) by The Barlow Project Authors (the screen and the editor),
   [SIL OFL 1.1](LICENSES/OFL-BarlowCondensed.txt); [Inter Tight](https://github.com/rsms/inter-tight) by The Inter Project Authors (the control card), [SIL OFL 1.1](LICENSES/OFL-InterTight.txt);
   the browser emulator's labels: [DotGothic16](https://github.com/fontworks-fonts/DotGothic16) by The DotGothic16 Project Authors, [SIL OFL 1.1](LICENSES/OFL-DotGothic16.txt)
-- Samples: [Versilian Studios](https://versilian-studios.com/) [VSCO-2 Community Edition](https://github.com/sgossner/VSCO-2-CE) and [VCSL](https://github.com/sgossner/VCSL), CC0 1.0: the SAMPLE sets, also SLICE's PIANO ([attribution](assets/samples-cc0/ATTRIBUTION.txt))
-- SLICE's BREAK and FUNK: made with [YuE2](https://github.com/multimodal-art-projection/YuE) by Multimodal Art Projection ([how](assets/breaks/ATTRIBUTION.txt))
 - VOICE engine: after [klattsch](https://github.com/tgies/klattsch) by Tony Gies (MIT); formant data from Klatt (1980) and Hillenbrand et al. (1995)
 - PHYS engine: models ported from [DaisySP](https://github.com/electro-smith/DaisySP) by Electrosmith and Emilie Gillet ([MIT](LICENSES/MIT-DaisySP.txt)) and from Emilie Gillet's [eurorack](https://github.com/pichenettes/eurorack) code ([MIT](LICENSES/MIT-Rings.txt))
 - FM6 engine: msfa from [Dexed](https://github.com/asb2m10/dexed) by Google Inc. and Pascal Gauthier ([Apache-2.0](LICENSES/Apache-2.0-msfa.txt))
